@@ -1,0 +1,93 @@
+/**
+ * 跨平台读取用户选择的文件文本（H5 无 getFileSystemManager）
+ */
+
+/** chooseFile 返回结构（各端字段略有差异） */
+export type ChooseFileResult = {
+  tempFilePaths : string[]
+  tempFiles : ChooseFileItem[]
+}
+
+export type ChooseFileItem = {
+  path : string
+  name : string
+  size : number
+}
+
+/** 从 uni.chooseFile 结果读取 UTF-8 文本 */
+export function readTextFromChooseFile(
+  chooseResult : ChooseFileResult,
+  onSuccess : (text : string) => void,
+  onFail : () => void
+) : void {
+  let path = ''
+  if (chooseResult.tempFilePaths != null && chooseResult.tempFilePaths.length > 0) {
+    path = chooseResult.tempFilePaths[0]
+  } else if (chooseResult.tempFiles != null && chooseResult.tempFiles.length > 0) {
+    path = chooseResult.tempFiles[0].path
+  }
+  if (path.length == 0) {
+    onFail()
+    return
+  }
+  // #ifdef WEB || H5
+  readTextOnWeb(path, onSuccess, onFail)
+  // #endif
+  // #ifndef WEB
+  // #ifndef H5
+  readTextWithFs(path, onSuccess, onFail)
+  // #endif
+  // #endif
+}
+
+// #ifdef WEB || H5
+/** H5：用 XMLHttpRequest 读 blob URL，避免 uni.request 把 JSON 自动解析成对象 */
+function readTextOnWeb(
+  url : string,
+  onSuccess : (text : string) => void,
+  onFail : () => void
+) : void {
+  const xhr = new XMLHttpRequest()
+  xhr.open('GET', url, true)
+  xhr.onload = () => {
+    const status = xhr.status
+    if ((status >= 200 && status < 300) || status == 0) {
+      const text = xhr.responseText
+      if (text != null && text.length > 0) {
+        onSuccess(text)
+      } else {
+        onFail()
+      }
+    } else {
+      onFail()
+    }
+  }
+  xhr.onerror = () => {
+    onFail()
+  }
+  xhr.send()
+}
+// #endif
+
+// #ifndef WEB
+// #ifndef H5
+function readTextWithFs(
+  path : string,
+  onSuccess : (text : string) => void,
+  onFail : () => void
+) : void {
+  const fs = uni.getFileSystemManager()
+  fs.readFile({
+    filePath: path,
+    encoding: 'utf-8',
+    success: (readRes) => {
+      onSuccess(readRes.data as string)
+    },
+    fail: () => {
+      onFail()
+    }
+  })
+}
+// #endif
+// #endif
+

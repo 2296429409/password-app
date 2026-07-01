@@ -1,0 +1,255 @@
+/**
+ * 全局状态管理（密钥文件体系）
+ */
+
+import type { VaultData, VaultEntry, EncryptedVault, KeyFile, GitConfig } from '@/types/vault.uts'
+import {
+  createEmptyVault, encryptVault, decryptVault,
+  vaultToJson, vaultFromJson, addEntry, updateEntry, deleteEntry, searchEntries
+} from '@/utils/vault.uts'
+import { pullVault, pushVault, fetchRemoteSha } from '@/utils/git.uts'
+import {
+  cacheKeyFile, gitConfigForVault, updateLastSync,
+  saveRemoteSha, loadRemoteSha, clearRemoteSha, removeCachedKeyFile
+} from '@/utils/storage.uts'
+import { masterKeyBytesFromFile } from '@/utils/keyfile.uts'
+
+class VaultStore {
+  isUnlocked : boolean = false
+  keyFile : KeyFile | null = null
+  masterKey : number[] = []
+  vaultData : VaultData | null = null
+  remoteSha : string = ''
+  remoteEncrypted : EncryptedVault | null = null
+  isSyncing : boolean = false
+  searchKeyword : string = ''
+
+  get vaultName() : string {
+    if (this.keyFile != null) return this.keyFile.vault_name
+    return ''
+  }
+
+  get gitVaultPath() : string {
+    if (this.keyFile != null) return this.keyFile.git_vault_path
+    return ''
+  }
+
+  private gitConfig() : GitConfig {
+    return gitConfigForVault(this.gitVaultPath)
+  }
+
+  /** 使用密钥文件打开密码库 */
+  openWithKeyFile(keyFile : KeyFile, encrypted : EncryptedVault | null, remoteSha : string | null = null) : boolean {
+    try {
+      const mk = masterKeyBytesFromFile(keyFile)
+      this.keyFile = keyFile
+      this.masterKey = mk
+      cacheKeyFile(keyFile)
+      if (encrypted != null) {
+        this.vaultData = decryptVault(encrypted, mk)
+        this.remoteEncrypted = encrypted
+      } else {
+        this.vaultData = createEmptyVault()
+        this.remoteEncrypted = null
+        clearRemoteSha(keyFile.vault_id)
+        this.remoteSha = ''
+      }
+      if (remoteSha != null && remoteSha.length > 0) {
+        this.remoteSha = remoteSha
+        saveRemoteSha(keyFile.vault_id, remoteSha)
+      } else {
+        this.remoteSha = loadRemoteSha(keyFile.vault_id)
+      }
+      this.isUnlocked = true
+      return true
+    } catch (e) {
+      return false
+    }
+  }
+
+  /** 从 Git 拉取并打开 */
+  openFromGit(keyFile : KeyFile) : Promise<boolean> {
+    const config = gitConfigForVault(keyFile.git_vault_path)
+    return new Promise<boolean>((resolve) => {
+      if (config.token.length == 0 || config.owner.length == 0 || config.repo.length == 0) {
+        resolve(this.openWithKeyFile(keyFile, null, null))
+        return
+      }
+      pullVault(config).then((remote) => {
+        try {
+          const encrypted = vaultFromJson(remote.content)
+          resolve(this.openWithKeyFile(keyFile, encrypted, remote.sha))
+        } catch (e) {
+          resolve(false)
+        }
+      }).catch(() => {
+        resolve(this.openWithKeyFile(keyFile, null, null))
+      })
+    })
+  }
+
+  close() : void {
+    this.isUnlocked = false
+    this.keyFile = null
+    this.masterKey = []
+    this.vaultData = null
+    this.remoteEncrypted = null
+    this.remoteSha = ''
+  }
+
+  /** 切换密码库：关闭并清除当前库的本地密钥缓存 */
+  switchVault() : void {
+    let vaultId = ''
+    if (this.keyFile != null) {
+      vaultId = this.keyFile!.vault_id
+    }
+    this.close()
+    if (vaultId.length > 0) {
+      removeCachedKeyFile(vaultId)
+    }
+  }
+
+  encrypt() : EncryptedVault | null {
+    if (this.vaultData == null || this.keyFile == null || this.masterKey.length == 0) return null
+    return encryptVault(this.vaultData, this.keyFile, this.masterKey, this.remoteEncrypted)
+  }
+
+  getEntries() : VaultEntry[] {
+    if (this.vaultData == null) return []
+    return searchEntries(this.vaultData, this.searchKeyword)
+  }
+
+  add(entry : VaultEntry) : void {
+    if (this.vaultData == null) return
+    this.vaultData = addEntry(this.vaultData, entry)
+  }
+
+  update(entry : VaultEntry) : void {
+    if (this.vaultData == null) return
+    this.vaultData = updateEntry(this.vaultData, entry)
+  }
+
+  remove(entryId : string) : void {
+    if (this.vaultData == null) return
+    this.vaultData = deleteEntry(this.vaultData, entryId)
+  }
+
+  findById(id : string) : VaultEntry | null {
+    if (this.vaultData == null) return null
+    for (let i = 0; i < this.vaultData.entries.length; i++) {
+      if (this.vaultData.entries[i].id == id) return this.vaultData.entries[i]
+    }
+    return null
+  }
+
+  syncPush() : Promise<string> {
+    if (this.vaultData == null || this.keyFile == null) {
+      return Promise.reject(new Error('密码库未打开'))
+    }
+    const config = this.gitConfig()
+    if (config.token.length == 0) {
+      return Promise.reject(new Error('请先配置 Git'))
+    }
+    this.isSyncing = true
+    const encrypted = this.encrypt()
+    if (encrypted == null) {
+      this.isSyncing = false
+      return Promise.reject(new Error('加密失败'))
+    }
+    const content = vaultToJson(encrypted)
+    const vaultId = this.keyFile!.vault_id
+    return this.pushWithLatestSha(config, content, vaultId)
+  }
+
+  private pushWithLatestSha(config : GitConfig, content : string, vaultId : string) : Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      fetchRemoteSha(config).then((sha) => {
+        if (sha != null && sha.length > 0) {
+          this.remoteSha = sha
+          saveRemoteSha(vaultId, sha)
+        } else {
+          this.remoteSha = ''
+          clearRemoteSha(vaultId)
+        }
+        this.doPush(config, content, sha, vaultId).then(resolve).catch(reject)
+      }).catch(() => {
+        this.remoteSha = ''
+        clearRemoteSha(vaultId)
+        this.doPush(config, content, null, vaultId).then(resolve).catch(reject)
+      })
+    })
+  }
+
+  private doPush(config : GitConfig, content : string, sha : string | null, vaultId : string) : Promise<string> {
+    const msg = 'VaultSync: update ' + config.vault_path
+    return new Promise<string>((resolve, reject) => {
+      pushVault(config, content, sha, msg).then(() => {
+        pullVault(config).then((remote) => {
+          this.remoteSha = remote.sha
+          saveRemoteSha(vaultId, remote.sha)
+          updateLastSync()
+          this.isSyncing = false
+          resolve('推送成功')
+        }).catch(() => {
+          this.isSyncing = false
+          resolve('推送成功')
+        })
+      }).catch((err : Error) => {
+        this.isSyncing = false
+        reject(err)
+      })
+    })
+  }
+
+  sync() : Promise<string> {
+    if (this.vaultData == null || this.keyFile == null) {
+      return Promise.reject(new Error('密码库未打开'))
+    }
+    const config = this.gitConfig()
+    const vaultId = this.keyFile!.vault_id
+    this.isSyncing = true
+    return new Promise<string>((resolve, reject) => {
+      pullVault(config).then((remote) => {
+        try {
+          const remoteVault = vaultFromJson(remote.content)
+          const remoteData = decryptVault(remoteVault, this.masterKey)
+          this.remoteSha = remote.sha
+          saveRemoteSha(vaultId, remote.sha)
+          const localRev = this.vaultData!.revision
+          const remoteRev = remoteData.revision
+          if (remoteRev > localRev) {
+            this.vaultData = remoteData
+            this.remoteEncrypted = remoteVault
+            updateLastSync()
+            this.isSyncing = false
+            resolve('已拉取远程最新数据')
+          } else if (localRev > remoteRev) {
+            this.isSyncing = false
+            this.syncPush().then(resolve).catch(reject)
+          } else {
+            this.vaultData = remoteData
+            this.remoteEncrypted = remoteVault
+            updateLastSync()
+            this.isSyncing = false
+            resolve('已是最新')
+          }
+        } catch (e) {
+          this.remoteSha = remote.sha
+          saveRemoteSha(vaultId, remote.sha)
+          try {
+            this.remoteEncrypted = vaultFromJson(remote.content)
+          } catch (err) {
+            this.remoteEncrypted = null
+          }
+          this.isSyncing = false
+          this.syncPush().then(resolve).catch(reject)
+        }
+      }).catch(() => {
+        this.isSyncing = false
+        this.syncPush().then(resolve).catch(reject)
+      })
+    })
+  }
+}
+
+export const vaultStore = new VaultStore()

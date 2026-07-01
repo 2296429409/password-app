@@ -1,0 +1,159 @@
+/**
+ * 密钥文件：生成、解析、缓存、下载
+ * 密钥文件仅存用户本地，不上传 Git
+ */
+
+import type { KeyFile, VaultSummary } from '@/types/vault.uts'
+import { generateId, base64Encode } from '@/utils/crypto.uts'
+
+const KEYFILE_VERSION = 1
+
+/** 根据密码库名称生成 Git 文件名 */
+export function gitPathFromVaultName(vaultName : string, vaultId : string) : string {
+  let safe = ''
+  for (let i = 0; i < vaultName.length; i++) {
+    const c = vaultName.charAt(i)
+    if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') {
+      safe += '_'
+    } else {
+      safe += c
+    }
+  }
+  safe = safe.trim()
+  if (safe.length == 0) safe = 'vault'
+  const shortId = vaultId.length > 8 ? vaultId.substring(0, 8) : vaultId
+  return safe + '_' + shortId + '.enc'
+}
+
+/** 密钥文件下载文件名 */
+export function keyFileDownloadName(keyFile : KeyFile) : string {
+  let safe = keyFile.vault_name.trim()
+  if (safe.length == 0) safe = 'vault'
+  return safe + '.vaultkey'
+}
+
+/** 生成 32 字节主密钥 */
+export function generateMasterKeyBytes() : number[] {
+  const bytes : number[] = []
+  for (let i = 0; i < 32; i++) {
+    bytes.push(Math.floor(Math.random() * 256))
+  }
+  return bytes
+}
+
+/** 创建新密钥文件 */
+export function createKeyFile(vaultName : string) : KeyFile {
+  const vaultId = generateId()
+  const masterKeyBytes = generateMasterKeyBytes()
+  const now = new Date().toISOString()
+  return {
+    version: KEYFILE_VERSION,
+    vault_id: vaultId,
+    vault_name: vaultName.trim(),
+    master_key: base64Encode(masterKeyBytes),
+    git_vault_path: gitPathFromVaultName(vaultName, vaultId),
+    created_at: now
+  }
+}
+
+/** 解析密钥文件 JSON 文本 */
+export function parseKeyFile(json : string) : KeyFile {
+  let text = json
+  if (text.length > 0 && text.charCodeAt(0) == 0xFEFF) {
+    text = text.substring(1)
+  }
+  const trimmed = text.trim()
+  if (trimmed.length == 0) throw new Error('密钥文件为空')
+  let data : KeyFile
+  try {
+    data = JSON.parse(trimmed) as KeyFile
+  } catch (e) {
+    throw new Error('不是有效的 JSON 格式')
+  }
+  return normalizeKeyFile(data)
+}
+
+function normalizeKeyFile(data : KeyFile) : KeyFile {
+  if (data.vault_id == null || data.vault_id.length == 0) throw new Error('缺少 vault_id')
+  if (data.master_key == null || data.master_key.length == 0) throw new Error('缺少 master_key')
+  if (data.vault_name == null || data.vault_name.length == 0) {
+    data.vault_name = '未命名密码库'
+  }
+  if (data.git_vault_path == null || data.git_vault_path.length == 0) {
+    data.git_vault_path = gitPathFromVaultName(data.vault_name, data.vault_id)
+  }
+  if (data.version == null) {
+    data.version = KEYFILE_VERSION
+  }
+  return data
+}
+
+export function keyFileToJson(keyFile : KeyFile) : string {
+  return JSON.stringify(keyFile, null, 2)
+}
+
+/** 从密钥文件取出主密钥字节 */
+export function masterKeyBytesFromFile(keyFile : KeyFile) : number[] {
+  return base64DecodeKey(keyFile.master_key)
+}
+
+function base64DecodeKey(str : string) : number[] {
+  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const lookup = new Map<string, number>()
+  for (let i = 0; i < 64; i++) lookup.set(B64.charAt(i), i)
+  const bytes : number[] = []
+  const cleaned = str.replace(/\s/g, '')
+  let i = 0
+  while (i < cleaned.length) {
+    const c0 = lookup.get(cleaned.charAt(i)) ?? 0
+    const c1 = i + 1 < cleaned.length ? (lookup.get(cleaned.charAt(i + 1)) ?? 0) : 0
+    const c2 = i + 2 < cleaned.length ? (lookup.get(cleaned.charAt(i + 2)) ?? 0) : 0
+    const c3 = i + 3 < cleaned.length ? (lookup.get(cleaned.charAt(i + 3)) ?? 0) : 0
+    bytes.push((c0 << 2) | (c1 >> 4))
+    if (cleaned.charAt(i + 2) != '=') bytes.push(((c1 & 15) << 4) | (c2 >> 2))
+    if (cleaned.charAt(i + 3) != '=') bytes.push(((c2 & 3) << 6) | c3)
+    i += 4
+  }
+  return bytes
+}
+
+/** 下载密钥文件（Web / H5 触发浏览器下载，App 复制到剪贴板） */
+export function downloadKeyFile(keyFile : KeyFile) : void {
+  const content = keyFileToJson(keyFile)
+  const filename = keyFileDownloadName(keyFile)
+  // #ifdef WEB || H5
+  const blob = new Blob([content], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.style.display = 'none'
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(url)
+  // #endif
+  // #ifndef WEB
+  // #ifndef H5
+  uni.setClipboardData({
+    data: content,
+    success: () => {
+      uni.showModal({
+        title: '密钥已复制',
+        content: '请将剪贴板内容保存为 ' + filename + '，妥善保管，丢失将无法解密',
+        showCancel: false
+      })
+    }
+  })
+  // #endif
+  // #endif
+}
+
+export function keyFileToSummary(keyFile : KeyFile) : VaultSummary {
+  return {
+    vault_id: keyFile.vault_id,
+    vault_name: keyFile.vault_name,
+    git_vault_path: keyFile.git_vault_path,
+    last_opened_at: new Date().toISOString()
+  }
+}

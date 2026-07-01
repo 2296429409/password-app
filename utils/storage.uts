@@ -1,0 +1,153 @@
+/**
+ * 本地存储：Git 设置、密钥文件缓存、多密码库索引
+ */
+
+import type { AppSettings, GitConfig, KeyFile, VaultSummary } from '@/types/vault.uts'
+import { defaultGitConfig } from '@/utils/git.uts'
+import { keyFileToSummary, keyFileToJson } from '@/utils/keyfile.uts'
+
+const SETTINGS_KEY = 'vaultsync_settings'
+const VAULT_INDEX_KEY = 'vaultsync_vault_index'
+const ACTIVE_VAULT_KEY = 'vaultsync_active_vault'
+const KEYFILE_PREFIX = 'vaultsync_key_'
+const REMOTE_SHA_PREFIX = 'vaultsync_sha_'
+
+export function loadSettings() : AppSettings {
+  const raw = uni.getStorageSync(SETTINGS_KEY) as string | null
+  if (raw == null || raw.length == 0) {
+    return { git: null, last_sync_at: null }
+  }
+  try {
+    return JSON.parse(raw) as AppSettings
+  } catch (e) {
+    return { git: null, last_sync_at: null }
+  }
+}
+
+export function saveSettings(settings : AppSettings) : void {
+  uni.setStorageSync(SETTINGS_KEY, JSON.stringify(settings))
+}
+
+export function saveGitConfig(config : GitConfig) : void {
+  const settings = loadSettings()
+  settings.git = config
+  saveSettings(settings)
+}
+
+export function loadGitConfig() : GitConfig {
+  const settings = loadSettings()
+  if (settings.git != null) return settings.git
+  return defaultGitConfig()
+}
+
+/** 合并全局 Git 配置与当前密码库路径 */
+export function gitConfigForVault(gitVaultPath : string) : GitConfig {
+  const base = loadGitConfig()
+  return {
+    platform: base.platform,
+    owner: base.owner,
+    repo: base.repo,
+    branch: base.branch,
+    vault_path: gitVaultPath,
+    token: base.token
+  }
+}
+
+export function updateLastSync() : void {
+  const settings = loadSettings()
+  settings.last_sync_at = new Date().toISOString()
+  saveSettings(settings)
+}
+
+// ---- 多密码库索引 ----
+
+export function loadVaultIndex() : VaultSummary[] {
+  const raw = uni.getStorageSync(VAULT_INDEX_KEY) as string | null
+  if (raw == null || raw.length == 0) return []
+  try {
+    return JSON.parse(raw) as VaultSummary[]
+  } catch (e) {
+    return []
+  }
+}
+
+function saveVaultIndex(list : VaultSummary[]) : void {
+  uni.setStorageSync(VAULT_INDEX_KEY, JSON.stringify(list))
+}
+
+export function upsertVaultSummary(summary : VaultSummary) : void {
+  const list = loadVaultIndex()
+  const next : VaultSummary[] = []
+  let found = false
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].vault_id == summary.vault_id) {
+      next.push(summary)
+      found = true
+    } else {
+      next.push(list[i])
+    }
+  }
+  if (!found) next.push(summary)
+  saveVaultIndex(next)
+}
+
+export function removeVaultFromIndex(vaultId : string) : void {
+  const list = loadVaultIndex()
+  const next : VaultSummary[] = []
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].vault_id != vaultId) next.push(list[i])
+  }
+  saveVaultIndex(next)
+}
+
+// ---- 密钥文件缓存 ----
+
+export function cacheKeyFile(keyFile : KeyFile) : void {
+  uni.setStorageSync(KEYFILE_PREFIX + keyFile.vault_id, keyFileToJson(keyFile))
+  upsertVaultSummary(keyFileToSummary(keyFile))
+  setActiveVaultId(keyFile.vault_id)
+}
+
+export function loadCachedKeyFile(vaultId : string) : KeyFile | null {
+  const raw = uni.getStorageSync(KEYFILE_PREFIX + vaultId) as string | null
+  if (raw == null || raw.length == 0) return null
+  try {
+    return JSON.parse(raw) as KeyFile
+  } catch (e) {
+    return null
+  }
+}
+
+export function removeCachedKeyFile(vaultId : string) : void {
+  uni.removeStorageSync(KEYFILE_PREFIX + vaultId)
+  uni.removeStorageSync(REMOTE_SHA_PREFIX + vaultId)
+  removeVaultFromIndex(vaultId)
+  const active = loadActiveVaultId()
+  if (active == vaultId) {
+    uni.removeStorageSync(ACTIVE_VAULT_KEY)
+  }
+}
+
+export function setActiveVaultId(vaultId : string) : void {
+  uni.setStorageSync(ACTIVE_VAULT_KEY, vaultId)
+}
+
+export function loadActiveVaultId() : string {
+  const id = uni.getStorageSync(ACTIVE_VAULT_KEY) as string | null
+  if (id == null) return ''
+  return id
+}
+
+export function saveRemoteSha(vaultId : string, sha : string) : void {
+  uni.setStorageSync(REMOTE_SHA_PREFIX + vaultId, sha)
+}
+
+export function loadRemoteSha(vaultId : string) : string {
+  const sha = uni.getStorageSync(REMOTE_SHA_PREFIX + vaultId) as string | null
+  if (sha == null) return ''
+  return sha
+}
+
+export function clearRemoteSha(vaultId : string) : void {
+  uni.removeStorageSync(REMOTE_SHA_PREFIX + vaultId)
+}

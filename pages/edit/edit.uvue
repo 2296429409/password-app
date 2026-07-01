@@ -1,0 +1,239 @@
+<template>
+  <scroll-view class="edit-page" scroll-y="true">
+    <view class="form-group">
+      <text class="label">标题</text>
+      <input class="input" v-model="entry.title" placeholder="如：公司邮箱" />
+    </view>
+
+    <view class="form-group">
+      <text class="label">用户名</text>
+      <input class="input" v-model="entry.username" placeholder="登录账号" />
+    </view>
+
+    <view class="form-group">
+      <text class="label">密码</text>
+      <view class="pwd-row">
+        <input
+          class="input flex-1"
+          :password="!showPassword"
+          v-model="entry.password"
+          placeholder="密码"
+        />
+        <view class="pwd-btn" @click="showPassword = !showPassword">
+          <text class="pwd-btn-text">{{ showPassword ? '隐藏' : '显示' }}</text>
+        </view>
+        <view class="pwd-btn" @click="handleGenerate">
+          <text class="pwd-btn-text">生成</text>
+        </view>
+      </view>
+      <text class="strength" :class="strengthClass">强度：{{ strengthText }}</text>
+    </view>
+
+    <view class="form-group">
+      <text class="label">网址</text>
+      <input class="input" v-model="entry.url" placeholder="https://..." />
+    </view>
+
+    <view class="form-group">
+      <text class="label">备注</text>
+      <textarea class="textarea" v-model="entry.notes" placeholder="备注信息" />
+    </view>
+
+    <view class="form-group">
+      <text class="label">标签（逗号分隔）</text>
+      <input class="input" v-model="tagsInput" placeholder="工作, 邮箱" />
+    </view>
+
+    <view class="btn-save" @click="handleSave">
+      <text class="btn-save-text">保存</text>
+    </view>
+
+    <view v-if="isEdit" class="btn-delete" @click="handleDelete">
+      <text class="btn-delete-text">删除</text>
+    </view>
+  </scroll-view>
+</template>
+
+<script lang="uts">
+  import { vaultStore } from '@/store/vaultStore.uts'
+  import type { VaultEntry } from '@/types/vault.uts'
+  import { createNewEntry } from '@/utils/vault.uts'
+  import { generatePassword, getPasswordStrength, strengthLabel } from '@/utils/password.uts'
+
+  export default {
+    data() {
+      return {
+        entry: createNewEntry() as VaultEntry,
+        isEdit: false,
+        showPassword: false,
+        tagsInput: ''
+      }
+    },
+    computed: {
+      strengthText() : string {
+        return strengthLabel(getPasswordStrength(this.entry.password))
+      },
+      strengthClass() : string {
+        const s = getPasswordStrength(this.entry.password)
+        if (s <= 2) return 'weak'
+        if (s <= 4) return 'medium'
+        return 'strong'
+      }
+    },
+    onLoad(options : OnLoadOptions) {
+      const id = options['id'] as string | null
+      if (id != null && id.length > 0) {
+        const found = vaultStore.findById(id)
+        if (found != null) {
+          this.entry = found
+          this.isEdit = true
+          this.tagsInput = found.tags.join(', ')
+        }
+      }
+    },
+    methods: {
+      handleGenerate() {
+        this.entry.password = generatePassword(16, true, true, true)
+        this.showPassword = true
+      },
+      handleSave() {
+        if (this.entry.title.length == 0) {
+          uni.showToast({ title: '请填写标题', icon: 'none' })
+          return
+        }
+        const tags : string[] = []
+        if (this.tagsInput.length > 0) {
+          const parts = this.tagsInput.split(',')
+          for (let i = 0; i < parts.length; i++) {
+            const t = parts[i].trim()
+            if (t.length > 0) tags.push(t)
+          }
+        }
+        this.entry.tags = tags
+        if (this.isEdit) {
+          vaultStore.update(this.entry)
+        } else {
+          vaultStore.add(this.entry)
+        }
+        uni.showLoading({ title: '同步中...' })
+        vaultStore.syncPush().then(() => {
+          uni.hideLoading()
+          uni.showToast({ title: '已保存并同步', icon: 'success' })
+          setTimeout(() => { uni.navigateBack() }, 300)
+        }).catch((err : Error) => {
+          uni.hideLoading()
+          uni.showToast({ title: '已保存，同步失败：' + err.message, icon: 'none', duration: 2500 })
+          setTimeout(() => { uni.navigateBack() }, 600)
+        })
+      },
+      handleDelete() {
+        uni.showModal({
+          title: '确认删除',
+          content: '删除后需同步到 Git 才会永久生效',
+          success: (res) => {
+            if (res.confirm) {
+              vaultStore.remove(this.entry.id)
+              uni.showToast({ title: '已删除', icon: 'success' })
+              setTimeout(() => { uni.navigateBack() }, 300)
+            }
+          }
+        })
+      }
+    }
+  }
+</script>
+
+<style>
+  .edit-page {
+    flex: 1;
+    padding: 16px;
+    background-color: #0f0f1a;
+  }
+
+  .form-group {
+    margin-bottom: 20px;
+  }
+
+  .label {
+    font-size: 13px;
+    color: #8888a0;
+    margin-bottom: 6px;
+  }
+
+  .input {
+    width: 100%;
+    height: 44px;
+    background-color: #1a1a2e;
+    border-radius: 8px;
+    padding: 0 12px;
+    color: #e8e8f0;
+    font-size: 15px;
+  }
+
+  .pwd-row {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .flex-1 {
+    flex: 1;
+  }
+
+  .pwd-btn {
+    padding: 8px 12px;
+    margin-left: 8px;
+  }
+
+  .pwd-btn-text {
+    font-size: 13px;
+    color: #6c63ff;
+  }
+
+  .strength {
+    font-size: 12px;
+    margin-top: 4px;
+  }
+
+  .weak { color: #ff6b6b; }
+  .medium { color: #fcc419; }
+  .strong { color: #51cf66; }
+
+  .textarea {
+    width: 100%;
+    height: 80px;
+    background-color: #1a1a2e;
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: #e8e8f0;
+    font-size: 15px;
+  }
+
+  .btn-save {
+    height: 48px;
+    background-color: #6c63ff;
+    border-radius: 8px;
+    align-items: center;
+    justify-content: center;
+    margin-top: 12px;
+  }
+
+  .btn-save-text {
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: bold;
+  }
+
+  .btn-delete {
+    height: 48px;
+    border-radius: 8px;
+    align-items: center;
+    justify-content: center;
+    margin-top: 12px;
+    margin-bottom: 40px;
+  }
+
+  .btn-delete-text {
+    color: #ff6b6b;
+    font-size: 15px;
+  }
+</style>

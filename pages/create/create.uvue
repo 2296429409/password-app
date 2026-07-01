@@ -1,0 +1,148 @@
+<template>
+  <scroll-view class="create-page" scroll-y="true">
+    <text class="title">创建新密码库</text>
+    <text class="desc">将自动生成密钥文件并下载，请妥善保管。密钥文件仅存本地，不上传 Git。</text>
+
+    <view class="form-group">
+      <text class="label">密码库名称</text>
+      <input class="input" v-model="vaultName" placeholder="如：工作、个人、家庭" />
+    </view>
+
+    <view class="preview" v-if="vaultName.length > 0">
+      <text class="preview-label">Git 文件名预览</text>
+      <text class="preview-value">{{ previewPath }}</text>
+      <text class="preview-label">密钥文件预览</text>
+      <text class="preview-value">{{ previewKeyName }}</text>
+    </view>
+
+    <view class="btn-primary" @click="handleCreate">
+      <text class="btn-text">{{ creating ? '创建中...' : '创建并下载密钥' }}</text>
+    </view>
+
+    <view class="info">
+      <text class="info-item">· 每个密码库对应一个 .vaultkey 密钥文件</text>
+      <text class="info-item">· Git 上保存为独立的 .enc 文件，方便管理删除</text>
+      <text class="info-item">· 创建后密钥会自动缓存，下次无需重新导入</text>
+    </view>
+  </scroll-view>
+</template>
+
+<script lang="uts">
+  import { vaultStore } from '@/store/vaultStore.uts'
+  import {
+    createKeyFile, gitPathFromVaultName, downloadKeyFile
+  } from '@/utils/keyfile.uts'
+  import { loadGitConfig } from '@/utils/storage.uts'
+
+  export default {
+    data() {
+      return {
+        vaultName: '',
+        creating: false
+      }
+    },
+    computed: {
+      previewPath() : string {
+        if (this.vaultName.length == 0) return ''
+        return gitPathFromVaultName(this.vaultName, 'preview00')
+      },
+      previewKeyName() : string {
+        const n = this.vaultName.trim()
+        if (n.length == 0) return ''
+        return n + '.vaultkey'
+      }
+    },
+    methods: {
+      handleCreate() {
+        const name = this.vaultName.trim()
+        if (name.length == 0) {
+          uni.showToast({ title: '请输入密码库名称', icon: 'none' })
+          return
+        }
+        if (this.creating) return
+        this.creating = true
+
+        const keyFile = createKeyFile(name)
+        const ok = vaultStore.openWithKeyFile(keyFile, null, null)
+        if (!ok) {
+          this.creating = false
+          uni.showToast({ title: '创建失败', icon: 'none' })
+          return
+        }
+
+        downloadKeyFile(keyFile)
+
+        const config = loadGitConfig()
+        const hasGit = config.token.length > 0 && config.owner.length > 0 && config.repo.length > 0
+        if (hasGit) {
+          vaultStore.syncPush().then(() => {
+            this.creating = false
+            uni.showToast({ title: '已创建并同步到 Git', icon: 'success' })
+            setTimeout(() => { uni.reLaunch({ url: '/pages/index/index' }) }, 500)
+          }).catch((err : Error) => {
+            this.creating = false
+            uni.showModal({
+              title: '已创建本地库',
+              content: 'Git 同步失败：' + err.message + '。请稍后在密码库内手动同步。',
+              showCancel: false,
+              success: () => {
+                uni.reLaunch({ url: '/pages/index/index' })
+              }
+            })
+          })
+        } else {
+          this.creating = false
+          uni.showToast({ title: '已创建，请保存密钥文件', icon: 'success' })
+          setTimeout(() => { uni.reLaunch({ url: '/pages/index/index' }) }, 600)
+        }
+      }
+    }
+  }
+</script>
+
+<style>
+  .create-page {
+    flex: 1;
+    padding: 20px;
+    background-color: #0f0f1a;
+  }
+
+  .title { font-size: 22px; font-weight: bold; color: #e8e8f0; margin-bottom: 8px; }
+  .desc { font-size: 13px; color: #8888a0; margin-bottom: 24px; line-height: 20px; }
+
+  .form-group { margin-bottom: 20px; }
+  .label { font-size: 13px; color: #8888a0; margin-bottom: 6px; }
+  .input {
+    width: 100%;
+    height: 48px;
+    background-color: #1a1a2e;
+    border-radius: 8px;
+    padding: 0 14px;
+    color: #e8e8f0;
+    font-size: 16px;
+  }
+
+  .preview {
+    background-color: #1a1a2e;
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 20px;
+  }
+
+  .preview-label { font-size: 12px; color: #8888a0; margin-bottom: 4px; }
+  .preview-value { font-size: 14px; color: #6c63ff; margin-bottom: 12px; }
+
+  .btn-primary {
+    height: 48px;
+    background-color: #6c63ff;
+    border-radius: 8px;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 24px;
+  }
+
+  .btn-text { color: #fff; font-size: 16px; font-weight: bold; }
+
+  .info { padding: 12px 0 40px 0; }
+  .info-item { font-size: 13px; color: #8888a0; margin-bottom: 8px; line-height: 20px; }
+</style>

@@ -1,0 +1,209 @@
+<template>
+  <scroll-view class="settings-page" scroll-y="true">
+    <text class="section-title">Git 同步配置</text>
+    <text class="section-desc">全局仓库配置。每个密码库使用独立 .enc 文件，文件名由密码库名称决定。</text>
+
+    <view class="current-vault" v-if="currentPath.length > 0">
+      <text class="current-label">当前密码库 Git 文件</text>
+      <text class="current-value">{{ currentPath }}</text>
+    </view>
+
+    <view class="form-group">
+      <text class="label">平台</text>
+      <view class="platform-row">
+        <view
+          class="platform-btn"
+          :class="config.platform == 'gitee' ? 'active' : ''"
+          @click="config.platform = 'gitee'"
+        >
+          <text class="platform-text">Gitee</text>
+        </view>
+        <view
+          class="platform-btn"
+          :class="config.platform == 'github' ? 'active' : ''"
+          @click="config.platform = 'github'"
+        >
+          <text class="platform-text">GitHub</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="form-group">
+      <text class="label">用户名 / 组织</text>
+      <input class="input" v-model="config.owner" placeholder="仓库所有者" />
+    </view>
+
+    <view class="form-group">
+      <text class="label">仓库名</text>
+      <input class="input" v-model="config.repo" placeholder="如：password" />
+    </view>
+
+    <view class="form-group">
+      <text class="label">分支</text>
+      <input class="input" v-model="config.branch" placeholder="main" />
+    </view>
+
+    <view class="form-group">
+      <text class="label">Access Token</text>
+      <input
+        class="input"
+        :password="true"
+        v-model="config.token"
+        placeholder="私人令牌（仅存本地）"
+      />
+    </view>
+
+    <view class="btn-primary" @click="handleSave">
+      <text class="btn-text">保存配置</text>
+    </view>
+
+    <view class="btn-secondary" @click="handleTest">
+      <text class="btn-secondary-text">测试连接</text>
+    </view>
+
+    <view class="info-section">
+      <text class="info-title">多密码库说明</text>
+      <text class="info-item">· 密钥文件 (.vaultkey) 仅存本地，不上传 Git</text>
+      <text class="info-item">· 每个密码库对应 Git 上一个独立文件，如 工作_abc12345.enc</text>
+      <text class="info-item">· 删除某个密码库时，只需在 Git 删除对应 .enc 文件</text>
+      <text class="info-item">· 换设备时导入 .vaultkey 密钥文件即可</text>
+    </view>
+  </scroll-view>
+</template>
+
+<script lang="uts">
+  import type { GitConfig } from '@/types/vault.uts'
+  import { loadGitConfig, saveGitConfig } from '@/utils/storage.uts'
+  import { testConnection, defaultGitConfig } from '@/utils/git.uts'
+  import { vaultStore } from '@/store/vaultStore.uts'
+
+  export default {
+    data() {
+      return {
+        config: defaultGitConfig() as GitConfig,
+        currentPath: ''
+      }
+    },
+    onLoad() {
+      this.config = loadGitConfig()
+      if (vaultStore.isUnlocked) {
+        this.currentPath = vaultStore.gitVaultPath
+      }
+    },
+    methods: {
+      handleSave() {
+        if (this.config.owner.length == 0 || this.config.repo.length == 0) {
+          uni.showToast({ title: '请填写仓库信息', icon: 'none' })
+          return
+        }
+        this.config.vault_path = ''
+        saveGitConfig(this.config)
+        uni.showToast({ title: '配置已保存', icon: 'success' })
+      },
+      handleTest() {
+        if (this.config.token.length == 0) {
+          uni.showToast({ title: '请填写 Token', icon: 'none' })
+          return
+        }
+        uni.showLoading({ title: '测试中...' })
+        testConnection(this.config).then((ok) => {
+          uni.hideLoading()
+          if (ok) {
+            uni.showToast({ title: '连接成功', icon: 'success' })
+          } else {
+            uni.showToast({ title: '连接失败，请检查配置', icon: 'none' })
+          }
+        })
+      }
+    }
+  }
+</script>
+
+<style>
+  .settings-page {
+    flex: 1;
+    padding: 16px;
+    background-color: #0f0f1a;
+  }
+
+  .section-title {
+    font-size: 18px;
+    font-weight: bold;
+    color: #e8e8f0;
+    margin-bottom: 4px;
+  }
+
+  .section-desc {
+    font-size: 13px;
+    color: #8888a0;
+    margin-bottom: 16px;
+    line-height: 20px;
+  }
+
+  .current-vault {
+    background-color: #1a1a2e;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 16px;
+  }
+
+  .current-label { font-size: 12px; color: #8888a0; margin-bottom: 4px; }
+  .current-value { font-size: 14px; color: #6c63ff; }
+
+  .form-group { margin-bottom: 16px; }
+  .label { font-size: 13px; color: #8888a0; margin-bottom: 6px; }
+  .input {
+    width: 100%;
+    height: 44px;
+    background-color: #1a1a2e;
+    border-radius: 8px;
+    padding: 0 12px;
+    color: #e8e8f0;
+    font-size: 15px;
+  }
+
+  .platform-row { flex-direction: row; }
+  .platform-btn {
+    flex: 1;
+    height: 40px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #333355;
+    align-items: center;
+    justify-content: center;
+    margin-right: 8px;
+  }
+  .platform-btn.active { border-color: #6c63ff; background-color: #2a2a55; }
+  .platform-text { font-size: 14px; color: #e8e8f0; }
+
+  .btn-primary {
+    height: 48px;
+    background-color: #6c63ff;
+    border-radius: 8px;
+    align-items: center;
+    justify-content: center;
+    margin-top: 8px;
+  }
+  .btn-text { color: #ffffff; font-size: 16px; font-weight: bold; }
+
+  .btn-secondary {
+    height: 48px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #333355;
+    align-items: center;
+    justify-content: center;
+    margin-top: 12px;
+  }
+  .btn-secondary-text { color: #8888a0; font-size: 14px; }
+
+  .info-section {
+    margin-top: 32px;
+    margin-bottom: 40px;
+    padding: 16px;
+    background-color: #1a1a2e;
+    border-radius: 10px;
+  }
+  .info-title { font-size: 15px; font-weight: bold; color: #e8e8f0; margin-bottom: 12px; }
+  .info-item { font-size: 13px; color: #8888a0; margin-bottom: 6px; line-height: 20px; }
+</style>

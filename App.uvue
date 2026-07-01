@@ -1,0 +1,27 @@
+<script lang="uts">
+  // #ifdef APP-ANDROID || APP-HARMONY
+  let firstBackTime = 0
+  // #endif
+
+  export default {
+    onLaunch() {
+      console.log('VaultSync 启动')
+    },
+  }
+</script>
+
+<style>
+  page {
+    background-color: #0f0f1a;
+    color: #e8e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  .uni-row {
+    flex-direction: row;
+  }
+
+  .uni-column {
+    flex-direction: column;
+  }
+</style>

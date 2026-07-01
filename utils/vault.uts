@@ -1,0 +1,147 @@
+/**
+ * 密码库业务逻辑：加密/解密、条目 CRUD
+ */
+
+import type { VaultData, VaultEntry, EncryptedVault, KeyFile } from '@/types/vault.uts'
+import { generateIV, encryptWithKey, decryptWithKey, generateId } from '@/utils/crypto.uts'
+
+const VAULT_VERSION = 2
+
+export function createEmptyVault() : VaultData {
+  return {
+    version: VAULT_VERSION,
+    revision: 1,
+    entries: [],
+    folders: [],
+    updated_at: new Date().toISOString()
+  }
+}
+
+/** 加密密码库（密钥来自密钥文件） */
+export function encryptVault(data : VaultData, keyFile : KeyFile, masterKey : number[], existing : EncryptedVault | null = null) : EncryptedVault {
+  let iv : string
+  if (existing != null) {
+    iv = existing.iv
+  } else {
+    iv = generateIV()
+  }
+  const plaintext = JSON.stringify(data)
+  const encrypted = encryptWithKey(plaintext, masterKey, iv)
+  return {
+    version: VAULT_VERSION,
+    vault_id: keyFile.vault_id,
+    vault_name: keyFile.vault_name,
+    cipher: 'aes-256-cbc',
+    iv: iv,
+    encrypted_data: encrypted,
+    revision: data.revision,
+    updated_at: data.updated_at
+  }
+}
+
+/** 解密密码库 */
+export function decryptVault(encrypted : EncryptedVault, masterKey : number[]) : VaultData {
+  if (encrypted.encrypted_data.length == 0) {
+    throw new Error('INVALID_VAULT')
+  }
+  const plaintext = decryptWithKey(encrypted.encrypted_data, masterKey, encrypted.iv)
+  if (plaintext.length == 0) {
+    throw new Error('DECRYPT_FAILED')
+  }
+  try {
+    return JSON.parse(plaintext) as VaultData
+  } catch (e) {
+    throw new Error('DECRYPT_FAILED')
+  }
+}
+
+export function vaultToJson(vault : EncryptedVault) : string {
+  return JSON.stringify(vault, null, 2)
+}
+
+export function vaultFromJson(json : string) : EncryptedVault {
+  const trimmed = json.trim()
+  if (trimmed.length == 0) throw new Error('EMPTY_VAULT_FILE')
+  return JSON.parse(trimmed) as EncryptedVault
+}
+
+export function addEntry(data : VaultData, entry : VaultEntry) : VaultData {
+  const now = new Date().toISOString()
+  entry.created_at = now
+  entry.updated_at = now
+  const entries = data.entries.slice(0)
+  entries.push(entry)
+  return {
+    version: data.version,
+    revision: data.revision + 1,
+    entries: entries,
+    folders: data.folders,
+    updated_at: now
+  }
+}
+
+export function updateEntry(data : VaultData, entry : VaultEntry) : VaultData {
+  const now = new Date().toISOString()
+  entry.updated_at = now
+  const entries : VaultEntry[] = []
+  for (let i = 0; i < data.entries.length; i++) {
+    if (data.entries[i].id == entry.id) {
+      entries.push(entry)
+    } else {
+      entries.push(data.entries[i])
+    }
+  }
+  return {
+    version: data.version,
+    revision: data.revision + 1,
+    entries: entries,
+    folders: data.folders,
+    updated_at: now
+  }
+}
+
+export function deleteEntry(data : VaultData, entryId : string) : VaultData {
+  const entries : VaultEntry[] = []
+  for (let i = 0; i < data.entries.length; i++) {
+    if (data.entries[i].id != entryId) {
+      entries.push(data.entries[i])
+    }
+  }
+  return {
+    version: data.version,
+    revision: data.revision + 1,
+    entries: entries,
+    folders: data.folders,
+    updated_at: new Date().toISOString()
+  }
+}
+
+export function searchEntries(data : VaultData, keyword : string) : VaultEntry[] {
+  if (keyword.length == 0) return data.entries
+  const kw = keyword.toLowerCase()
+  const result : VaultEntry[] = []
+  for (let i = 0; i < data.entries.length; i++) {
+    const e = data.entries[i]
+    if (e.title.toLowerCase().indexOf(kw) >= 0 ||
+        e.username.toLowerCase().indexOf(kw) >= 0 ||
+        e.url.toLowerCase().indexOf(kw) >= 0) {
+      result.push(e)
+    }
+  }
+  return result
+}
+
+export function createNewEntry() : VaultEntry {
+  return {
+    id: generateId(),
+    title: '',
+    username: '',
+    password: '',
+    url: '',
+    notes: '',
+    tags: [],
+    folder_id: null,
+    created_at: '',
+    updated_at: ''
+  }
+}
