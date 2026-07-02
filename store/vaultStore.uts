@@ -39,12 +39,17 @@ class VaultStore {
   }
 
   /** 使用密钥文件打开密码库 */
-  openWithKeyFile(keyFile : KeyFile, encrypted : EncryptedVault | null, remoteSha : string | null = null) : boolean {
+  openWithKeyFile(
+    keyFile : KeyFile,
+    encrypted : EncryptedVault | null,
+    remoteSha : string | null = null,
+    cacheDurationMs : number = -1
+  ) : boolean {
     try {
       const mk = masterKeyBytesFromFile(keyFile)
       this.keyFile = keyFile
       this.masterKey = mk
-      cacheKeyFile(keyFile)
+      cacheKeyFile(keyFile, cacheDurationMs)
       if (encrypted != null) {
         this.vaultData = decryptVault(encrypted, mk)
         this.remoteEncrypted = encrypted
@@ -68,22 +73,22 @@ class VaultStore {
   }
 
   /** 从 Git 拉取并打开 */
-  openFromGit(keyFile : KeyFile) : Promise<boolean> {
+  openFromGit(keyFile : KeyFile, cacheDurationMs : number = -1) : Promise<boolean> {
     const config = gitConfigForVault(keyFile.git_vault_path)
     return new Promise<boolean>((resolve) => {
       if (config.token.length == 0 || config.owner.length == 0 || config.repo.length == 0) {
-        resolve(this.openWithKeyFile(keyFile, null, null))
+        resolve(this.openWithKeyFile(keyFile, null, null, cacheDurationMs))
         return
       }
       pullVault(config).then((remote) => {
         try {
           const encrypted = vaultFromJson(remote.content)
-          resolve(this.openWithKeyFile(keyFile, encrypted, remote.sha))
+          resolve(this.openWithKeyFile(keyFile, encrypted, remote.sha, cacheDurationMs))
         } catch (e) {
           resolve(false)
         }
       }).catch(() => {
-        resolve(this.openWithKeyFile(keyFile, null, null))
+        resolve(this.openWithKeyFile(keyFile, null, null, cacheDurationMs))
       })
     })
   }
@@ -111,7 +116,7 @@ class VaultStore {
 
   encrypt() : EncryptedVault | null {
     if (this.vaultData == null || this.keyFile == null || this.masterKey.length == 0) return null
-    return encryptVault(this.vaultData, this.keyFile, this.masterKey, this.remoteEncrypted)
+    return encryptVault(this.vaultData, this.keyFile, this.masterKey)
   }
 
   getEntries() : VaultEntry[] {
@@ -144,17 +149,23 @@ class VaultStore {
 
   syncPush() : Promise<string> {
     if (this.vaultData == null || this.keyFile == null) {
-      return Promise.reject(new Error('密码库未打开'))
+      return new Promise<string>((resolve, reject) => {
+        reject(new Error('密码库未打开'))
+      })
     }
     const config = this.gitConfig()
     if (config.token.length == 0) {
-      return Promise.reject(new Error('请先配置 Git'))
+      return new Promise<string>((resolve, reject) => {
+        reject(new Error('请先配置 Git'))
+      })
     }
     this.isSyncing = true
     const encrypted = this.encrypt()
     if (encrypted == null) {
       this.isSyncing = false
-      return Promise.reject(new Error('加密失败'))
+      return new Promise<string>((resolve, reject) => {
+        reject(new Error('加密失败'))
+      })
     }
     const content = vaultToJson(encrypted)
     const vaultId = this.keyFile!.vault_id
@@ -171,11 +182,19 @@ class VaultStore {
           this.remoteSha = ''
           clearRemoteSha(vaultId)
         }
-        this.doPush(config, content, sha, vaultId).then(resolve).catch(reject)
+        this.doPush(config, content, sha, vaultId).then((msg : string) => {
+          resolve(msg)
+        }).catch((err) => {
+          reject(err)
+        })
       }).catch(() => {
         this.remoteSha = ''
         clearRemoteSha(vaultId)
-        this.doPush(config, content, null, vaultId).then(resolve).catch(reject)
+        this.doPush(config, content, null, vaultId).then((msg : string) => {
+          resolve(msg)
+        }).catch((err) => {
+          reject(err)
+        })
       })
     })
   }
@@ -194,7 +213,7 @@ class VaultStore {
           this.isSyncing = false
           resolve('推送成功')
         })
-      }).catch((err : Error) => {
+      }).catch((err) => {
         this.isSyncing = false
         reject(err)
       })
@@ -203,7 +222,9 @@ class VaultStore {
 
   sync() : Promise<string> {
     if (this.vaultData == null || this.keyFile == null) {
-      return Promise.reject(new Error('密码库未打开'))
+      return new Promise<string>((resolve, reject) => {
+        reject(new Error('密码库未打开'))
+      })
     }
     const config = this.gitConfig()
     const vaultId = this.keyFile!.vault_id
@@ -225,7 +246,11 @@ class VaultStore {
             resolve('已拉取远程最新数据')
           } else if (localRev > remoteRev) {
             this.isSyncing = false
-            this.syncPush().then(resolve).catch(reject)
+            this.syncPush().then((msg : string) => {
+              resolve(msg)
+            }).catch((err) => {
+              reject(err)
+            })
           } else {
             this.vaultData = remoteData
             this.remoteEncrypted = remoteVault
@@ -242,11 +267,19 @@ class VaultStore {
             this.remoteEncrypted = null
           }
           this.isSyncing = false
-          this.syncPush().then(resolve).catch(reject)
+          this.syncPush().then((msg : string) => {
+            resolve(msg)
+          }).catch((err) => {
+            reject(err)
+          })
         }
       }).catch(() => {
         this.isSyncing = false
-        this.syncPush().then(resolve).catch(reject)
+        this.syncPush().then((msg : string) => {
+          resolve(msg)
+        }).catch((err) => {
+          reject(err)
+        })
       })
     })
   }

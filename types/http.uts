@@ -1,0 +1,13 @@
+/** uni.request success 回调结构 */
+export type RequestSuccessData = {
+  statusCode : number
+  data : any | null
+}
+
+/** Android 上 success 回调为 RequestSuccess 原生类型，不可强转为 UTSJSONObject */
+export function asRequestSuccess(res : RequestSuccess<any>) : RequestSuccessData {
+  return {
+    statusCode: res.statusCode,
+    data: res.data != null ? res.data : null
+  }
+}

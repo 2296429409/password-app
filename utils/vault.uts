@@ -2,10 +2,95 @@
  * 密码库业务逻辑：加密/解密、条目 CRUD
  */
 
-import type { VaultData, VaultEntry, EncryptedVault, KeyFile } from '@/types/vault.uts'
-import { generateIV, encryptWithKey, decryptWithKey, generateId } from '@/utils/crypto.uts'
+import type { VaultData, VaultEntry, VaultFolder, EncryptedVault, KeyFile } from '@/types/vault.uts'
+import { generateGcmNonce, encryptWithKey, decryptWithKey, generateId } from '@/utils/crypto.uts'
 
-const VAULT_VERSION = 2
+const VAULT_VERSION = 3
+
+function readJsonString(obj : UTSJSONObject, key : string, fallback : string = '') : string {
+  const value = obj.get(key)
+  if (value == null) return fallback
+  return value as string
+}
+
+function readJsonStringOrNull(obj : UTSJSONObject, key : string) : string | null {
+  const value = obj.get(key)
+  if (value == null) return null
+  return value as string
+}
+
+function parseVaultEntry(obj : any) : VaultEntry | null {
+  const jo = obj as UTSJSONObject
+  const id = readJsonString(jo, 'id')
+  if (id.length == 0) return null
+  const tags : string[] = []
+  const tagsRaw = jo.get('tags')
+  if (tagsRaw != null) {
+    const arr = tagsRaw as any[]
+    for (let i = 0; i < arr.length; i++) {
+      tags.push(arr[i] as string)
+    }
+  }
+  return {
+    id: id,
+    title: readJsonString(jo, 'title'),
+    username: readJsonString(jo, 'username'),
+    password: readJsonString(jo, 'password'),
+    url: readJsonString(jo, 'url'),
+    notes: readJsonString(jo, 'notes'),
+    tags: tags,
+    folder_id: readJsonStringOrNull(jo, 'folder_id'),
+    created_at: readJsonString(jo, 'created_at'),
+    updated_at: readJsonString(jo, 'updated_at')
+  }
+}
+
+function parseVaultFolder(obj : any) : VaultFolder | null {
+  const jo = obj as UTSJSONObject
+  const id = readJsonString(jo, 'id')
+  if (id.length == 0) return null
+  return {
+    id: id,
+    name: readJsonString(jo, 'name'),
+    parent_id: readJsonStringOrNull(jo, 'parent_id')
+  }
+}
+
+/** 从 JSON 对象解析 VaultData（Android 上 JSON.parse 返回 UTSJSONObject，不可直接 as VaultData） */
+function vaultDataFromJsonObject(obj : any) : VaultData {
+  const jo = obj as UTSJSONObject
+  const versionRaw = jo.get('version')
+  let version = VAULT_VERSION
+  if (versionRaw != null) version = versionRaw as number
+  const revisionRaw = jo.get('revision')
+  let revision = 1
+  if (revisionRaw != null) revision = revisionRaw as number
+  const entries : VaultEntry[] = []
+  const entriesRaw = jo.get('entries')
+  if (entriesRaw != null) {
+    const arr = entriesRaw as any[]
+    for (let i = 0; i < arr.length; i++) {
+      const entry = parseVaultEntry(arr[i])
+      if (entry != null) entries.push(entry)
+    }
+  }
+  const folders : VaultFolder[] = []
+  const foldersRaw = jo.get('folders')
+  if (foldersRaw != null) {
+    const arr = foldersRaw as any[]
+    for (let i = 0; i < arr.length; i++) {
+      const folder = parseVaultFolder(arr[i])
+      if (folder != null) folders.push(folder)
+    }
+  }
+  return {
+    version: version,
+    revision: revision,
+    entries: entries,
+    folders: folders,
+    updated_at: readJsonString(jo, 'updated_at')
+  }
+}
 
 export function createEmptyVault() : VaultData {
   return {
@@ -17,39 +102,37 @@ export function createEmptyVault() : VaultData {
   }
 }
 
-/** 加密密码库（密钥来自密钥文件） */
-export function encryptVault(data : VaultData, keyFile : KeyFile, masterKey : number[], existing : EncryptedVault | null = null) : EncryptedVault {
-  let iv : string
-  if (existing != null) {
-    iv = existing.iv
-  } else {
-    iv = generateIV()
-  }
+/** 加密密码库（AES-256-GCM，每次加密使用新 nonce） */
+export function encryptVault(data : VaultData, keyFile : KeyFile, masterKey : number[]) : EncryptedVault {
+  const nonce = generateGcmNonce()
   const plaintext = JSON.stringify(data)
-  const encrypted = encryptWithKey(plaintext, masterKey, iv)
+  const encrypted = encryptWithKey(plaintext, masterKey, nonce)
   return {
     version: VAULT_VERSION,
     vault_id: keyFile.vault_id,
     vault_name: keyFile.vault_name,
-    cipher: 'aes-256-cbc',
-    iv: iv,
-    encrypted_data: encrypted,
+    cipher: 'aes-256-gcm',
+    iv: nonce,
+    encrypted_data: encrypted.ciphertext,
+    auth_tag: encrypted.auth_tag,
     revision: data.revision,
     updated_at: data.updated_at
   }
 }
 
-/** 解密密码库 */
+/** 解密密码库（AES-256-GCM） */
 export function decryptVault(encrypted : EncryptedVault, masterKey : number[]) : VaultData {
   if (encrypted.encrypted_data.length == 0) {
     throw new Error('INVALID_VAULT')
   }
-  const plaintext = decryptWithKey(encrypted.encrypted_data, masterKey, encrypted.iv)
+  const tag = encrypted.auth_tag != null ? encrypted.auth_tag : ''
+  const plaintext = decryptWithKey(encrypted.encrypted_data, masterKey, encrypted.iv, tag)
   if (plaintext.length == 0) {
     throw new Error('DECRYPT_FAILED')
   }
   try {
-    return JSON.parse(plaintext) as VaultData
+    const parsed = JSON.parse(plaintext) as UTSJSONObject
+    return vaultDataFromJsonObject(parsed)
   } catch (e) {
     throw new Error('DECRYPT_FAILED')
   }
@@ -61,8 +144,35 @@ export function vaultToJson(vault : EncryptedVault) : string {
 
 export function vaultFromJson(json : string) : EncryptedVault {
   const trimmed = json.trim()
-  if (trimmed.length == 0) throw new Error('EMPTY_VAULT_FILE')
-  return JSON.parse(trimmed) as EncryptedVault
+  if (trimmed.length == 0) {
+    throw new Error('EMPTY_VAULT_FILE')
+  }
+  const parsed = JSON.parse(trimmed) as UTSJSONObject
+  const encryptedData = parsed.get('encrypted_data') as string | null
+  const iv = parsed.get('iv') as string | null
+  const authTag = parsed.get('auth_tag') as string | null
+  const vaultId = parsed.get('vault_id') as string | null
+  const cipher = parsed.get('cipher') as string | null
+  if (encryptedData == null || encryptedData.length == 0) {
+    throw new Error('INVALID_VAULT_JSON')
+  }
+  const versionRaw = parsed.get('version')
+  let version = 3
+  if (versionRaw != null) version = versionRaw as number
+  const revisionRaw = parsed.get('revision')
+  let revision = 1
+  if (revisionRaw != null) revision = revisionRaw as number
+  return {
+    version: version,
+    vault_id: vaultId != null ? vaultId : '',
+    vault_name: parsed.get('vault_name') as string | null ?? '',
+    cipher: cipher != null ? cipher : 'aes-256-gcm',
+    iv: iv != null ? iv : '',
+    encrypted_data: encryptedData,
+    auth_tag: authTag != null ? authTag : '',
+    revision: revision,
+    updated_at: parsed.get('updated_at') as string | null ?? ''
+  }
 }
 
 export function addEntry(data : VaultData, entry : VaultEntry) : VaultData {
@@ -116,16 +226,25 @@ export function deleteEntry(data : VaultData, entryId : string) : VaultData {
   }
 }
 
+function entryMatchesKeyword(entry : VaultEntry, kw : string) : boolean {
+  if (entry.title.toLowerCase().indexOf(kw) >= 0) return true
+  if (entry.username.toLowerCase().indexOf(kw) >= 0) return true
+  if (entry.password.toLowerCase().indexOf(kw) >= 0) return true
+  if (entry.url.toLowerCase().indexOf(kw) >= 0) return true
+  if (entry.notes.toLowerCase().indexOf(kw) >= 0) return true
+  for (let i = 0; i < entry.tags.length; i++) {
+    if (entry.tags[i].toLowerCase().indexOf(kw) >= 0) return true
+  }
+  return false
+}
+
 export function searchEntries(data : VaultData, keyword : string) : VaultEntry[] {
   if (keyword.length == 0) return data.entries
   const kw = keyword.toLowerCase()
   const result : VaultEntry[] = []
   for (let i = 0; i < data.entries.length; i++) {
-    const e = data.entries[i]
-    if (e.title.toLowerCase().indexOf(kw) >= 0 ||
-        e.username.toLowerCase().indexOf(kw) >= 0 ||
-        e.url.toLowerCase().indexOf(kw) >= 0) {
-      result.push(e)
+    if (entryMatchesKeyword(data.entries[i], kw)) {
+      result.push(data.entries[i])
     }
   }
   return result

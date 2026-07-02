@@ -44,6 +44,21 @@ export type VaultSummary = {
   vault_name : string
   git_vault_path : string
   last_opened_at : string
+  /** null 表示永久缓存 */
+  expires_at : string | null
+}
+
+/** 本地密钥缓存记录 */
+export type CachedKeyRecord = {
+  key_file : KeyFile
+  /** null 表示永久有效 */
+  expires_at : string | null
+}
+
+/** 密钥缓存时长选项 */
+export type KeyCacheOption = {
+  label : string
+  ms : number
 }
 
 /** 加密后的 vault 文件（提交到 Git，不含密钥） */
@@ -54,6 +69,7 @@ export type EncryptedVault = {
   cipher : string
   iv : string
   encrypted_data : string
+  auth_tag : string
   revision : number
   updated_at : string
 }

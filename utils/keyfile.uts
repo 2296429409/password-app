@@ -4,7 +4,15 @@
  */
 
 import type { KeyFile, VaultSummary } from '@/types/vault.uts'
-import { generateId, base64Encode } from '@/utils/crypto.uts'
+import { generateId, base64Encode, secureRandomBytes, charCodeAtNum } from '@/utils/crypto.uts'
+
+// #ifdef APP-ANDROID
+import { Context } from 'android.content'
+import { ContentValues } from 'android.content'
+import { MediaStore } from 'android.provider'
+import { Build, Environment } from 'android.os'
+import { File, FileOutputStream, OutputStreamWriter } from 'java.io'
+// #endif
 
 const KEYFILE_VERSION = 1
 
@@ -32,13 +40,9 @@ export function keyFileDownloadName(keyFile : KeyFile) : string {
   return safe + '.vaultkey'
 }
 
-/** 生成 32 字节主密钥 */
+/** 生成 32 字节主密钥（crypto.getRandomValues） */
 export function generateMasterKeyBytes() : number[] {
-  const bytes : number[] = []
-  for (let i = 0; i < 32; i++) {
-    bytes.push(Math.floor(Math.random() * 256))
-  }
-  return bytes
+  return secureRandomBytes(32)
 }
 
 /** 创建新密钥文件 */
@@ -56,18 +60,59 @@ export function createKeyFile(vaultName : string) : KeyFile {
   }
 }
 
+function readJsonString(obj : any, key : string, fallback : string = '') : string {
+  const jo = obj as UTSJSONObject
+  const value = jo.get(key)
+  if (value == null) return fallback
+  return value as string
+}
+
+/** 从 JSON 对象解析密钥文件（Android 上 JSON.parse 返回 UTSJSONObject，不可直接 as KeyFile） */
+export function keyFileFromJsonObject(obj : any) : KeyFile | null {
+  const vaultId = readJsonString(obj, 'vault_id')
+  if (vaultId.length == 0) return null
+  const masterKey = readJsonString(obj, 'master_key')
+  if (masterKey.length == 0) return null
+  const versionRaw = (obj as UTSJSONObject).get('version')
+  let version = 1
+  if (versionRaw != null) version = versionRaw as number
+  return {
+    version: version,
+    vault_id: vaultId,
+    vault_name: readJsonString(obj, 'vault_name', '未命名密码库'),
+    master_key: masterKey,
+    git_vault_path: readJsonString(obj, 'git_vault_path'),
+    created_at: readJsonString(obj, 'created_at')
+  }
+}
+
 /** 解析密钥文件 JSON 文本 */
 export function parseKeyFile(json : string) : KeyFile {
   let text = json
-  if (text.length > 0 && text.charCodeAt(0) == 0xFEFF) {
+  if (text.length > 0 && charCodeAtNum(text, 0) == 0xFEFF) {
     text = text.substring(1)
   }
   const trimmed = text.trim()
   if (trimmed.length == 0) throw new Error('密钥文件为空')
-  let data : KeyFile
-  try {
-    data = JSON.parse(trimmed) as KeyFile
-  } catch (e) {
+  const tryParse = (s : string) : KeyFile | null => {
+    try {
+      const parsed = JSON.parse(s) as UTSJSONObject
+      return keyFileFromJsonObject(parsed)
+    } catch (e) {
+      return null
+    }
+  }
+  let data = tryParse(trimmed)
+  if (data == null) {
+    // 有些 Android UTS 版本不支持多行 JSON，删除所有换行和连续空格后重试
+    let flat = trimmed
+    flat = flat.split('\r').join('')
+    flat = flat.split('\n').join(' ')
+    flat = flat.split('\\n').join(' ')
+    while (flat.indexOf('  ') >= 0) flat = flat.split('  ').join(' ')
+    data = tryParse(flat)
+  }
+  if (data == null) {
     throw new Error('不是有效的 JSON 格式')
   }
   return normalizeKeyFile(data)
@@ -117,7 +162,20 @@ function base64DecodeKey(str : string) : number[] {
   return bytes
 }
 
-/** 下载密钥文件（Web / H5 触发浏览器下载，App 复制到剪贴板） */
+function copyKeyFileToClipboard(content : string, filename : string) : void {
+  uni.setClipboardData({
+    data: content,
+    success: () => {
+      uni.showModal({
+        title: '密钥已复制',
+        content: '请将剪贴板内容保存为 ' + filename + '，妥善保管，丢失将无法解密',
+        showCancel: false
+      })
+    }
+  })
+}
+
+/** 下载密钥文件（Web 直接浏览器下载，Android 保存到系统下载目录，iOS 分享） */
 export function downloadKeyFile(keyFile : KeyFile) : void {
   const content = keyFileToJson(keyFile)
   const filename = keyFileDownloadName(keyFile)
@@ -133,27 +191,81 @@ export function downloadKeyFile(keyFile : KeyFile) : void {
   document.body.removeChild(anchor)
   URL.revokeObjectURL(url)
   // #endif
-  // #ifndef WEB
-  // #ifndef H5
-  uni.setClipboardData({
+  // #ifdef APP-ANDROID
+  try {
+    const appContext = UTSAndroid.getAppContext() as Context
+    if (Build.VERSION.SDK_INT >= 29) {
+      // Android 10+：通过 MediaStore 保存到系统下载目录
+      const values = new ContentValues()
+      values.put(MediaStore.Downloads.DISPLAY_NAME, filename)
+      values.put(MediaStore.Downloads.MIME_TYPE, 'application/octet-stream')
+      values.put(MediaStore.Downloads.IS_PENDING, 1)
+      const uri = appContext.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+      if (uri != null) {
+        const os = appContext.getContentResolver().openOutputStream(uri)
+        if (os != null) {
+          const writer = new OutputStreamWriter(os, 'UTF-8')
+          writer.write(content)
+          writer.close()
+        }
+        values.clear()
+        values.put(MediaStore.Downloads.IS_PENDING, 0)
+        appContext.getContentResolver().update(uri, values, null, null)
+      }
+    } else {
+      // Android 9 及以下：直接写入外部存储下载目录
+      const dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+      if (dir != null) {
+        const destFile = new File(dir, filename)
+        const fos = new FileOutputStream(destFile)
+        const writer = new OutputStreamWriter(fos, 'UTF-8')
+        writer.write(content)
+        writer.close()
+      }
+    }
+    uni.showToast({ title: '密钥文件已保存到系统下载目录', icon: 'none' })
+  } catch (e) {
+    copyKeyFileToClipboard(content, filename)
+  }
+  // #endif
+  // #ifdef APP-IOS
+  const filePath = uni.env.USER_DATA_PATH + '/' + filename
+  const fs = uni.getFileSystemManager()
+  fs.writeFile({
+    filePath: filePath,
     data: content,
+    encoding: 'utf-8',
     success: () => {
-      uni.showModal({
-        title: '密钥已复制',
-        content: '请将剪贴板内容保存为 ' + filename + '，妥善保管，丢失将无法解密',
-        showCancel: false
+      uni.shareWithSystem({
+        type: 'file',
+        filePaths: [filePath],
+        success: () => {},
+        fail: () => {
+          uni.showModal({
+            title: '密钥已生成',
+            content: '文件已保存到应用目录。分享面板未打开，请通过文件管理器导出 ' + filename + '，或使用剪贴板备份。',
+            confirmText: '复制内容',
+            cancelText: '知道了',
+            success: (res) => {
+              if (res.confirm) copyKeyFileToClipboard(content, filename)
+            }
+          })
+        }
       })
+    },
+    fail: () => {
+      copyKeyFileToClipboard(content, filename)
     }
   })
   // #endif
-  // #endif
 }
 
-export function keyFileToSummary(keyFile : KeyFile) : VaultSummary {
+export function keyFileToSummary(keyFile : KeyFile, expiresAt : string | null = null) : VaultSummary {
   return {
     vault_id: keyFile.vault_id,
     vault_name: keyFile.vault_name,
     git_vault_path: keyFile.git_vault_path,
-    last_opened_at: new Date().toISOString()
+    last_opened_at: new Date().toISOString(),
+    expires_at: expiresAt
   }
 }

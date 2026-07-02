@@ -1,27 +1,291 @@
 <script lang="uts">
+  import { syncPageTheme } from '@/utils/theme.uts'
+
   // #ifdef APP-ANDROID || APP-HARMONY
   let firstBackTime = 0
   // #endif
 
   export default {
     onLaunch() {
-      console.log('VaultSync 启动')
-    },
+      syncPageTheme()
+    }
   }
 </script>
 
 <style>
-  page {
-    background-color: #0f0f1a;
-    color: #e8e8f0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  }
+  .uni-row { flex-direction: row; }
+  .uni-column { flex-direction: column; }
 
-  .uni-row {
-    flex-direction: row;
-  }
-
-  .uni-column {
+  /* ---- 页面容器 ---- */
+  .page-shell {
+    flex: 1;
     flex-direction: column;
   }
+
+  .page-shell.theme-light { background-color: #f4f6fb; }
+  .page-shell.theme-dark { background-color: #0f0f1a; }
+
+  /* ---- 文字 ---- */
+  .theme-light .t-text-primary { color: #111827; }
+  .theme-dark .t-text-primary { color: #e8e8f0; }
+
+  .theme-light .t-text-secondary { color: #6b7280; }
+  .theme-dark .t-text-secondary { color: #8888a0; }
+
+  .theme-light .t-text-muted { color: #9ca3af; }
+  .theme-dark .t-text-muted { color: #555570; }
+
+  .theme-light .t-text-accent { color: #635bff; }
+  .theme-dark .t-text-accent { color: #8b83ff; }
+
+  .theme-light .t-text-danger { color: #e03131; }
+  .theme-dark .t-text-danger { color: #ff6b6b; }
+
+  .t-title-lg { font-size: 26px; font-weight: bold; }
+  .t-title-md { font-size: 22px; font-weight: bold; }
+  .t-section-label { font-size: 14px; font-weight: bold; }
+  .t-body { font-size: 13px; line-height: 20px; }
+
+  /* ---- 卡片 ---- */
+  .t-card {
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+
+  .theme-light .t-card {
+    background-color: #ffffff;
+    border-width: 1px;
+    border-color: #e8ebf2;
+  }
+
+  .theme-dark .t-card {
+    background-color: #1a1a2e;
+    border-width: 1px;
+    border-color: #2a2a45;
+  }
+
+  .t-card-row {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  /* ---- 输入框 ---- */
+  .t-input {
+    width: 100%;
+    height: 44px;
+    border-radius: 10px;
+    padding: 0 14px;
+    font-size: 15px;
+  }
+
+  .theme-light .t-input {
+    background-color: #f0f2f8;
+    color: #111827;
+  }
+
+  .theme-dark .t-input {
+    background-color: #1a1a2e;
+    color: #e8e8f0;
+  }
+
+  .t-textarea {
+    width: 100%;
+    height: 88px;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 15px;
+  }
+
+  .theme-light .t-textarea {
+    background-color: #f0f2f8;
+    color: #111827;
+  }
+
+  .theme-dark .t-textarea {
+    background-color: #1a1a2e;
+    color: #e8e8f0;
+  }
+
+  /* ---- 按钮 ---- */
+  .t-btn-primary {
+    height: 48px;
+    border-radius: 12px;
+    background-color: #635bff;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .t-btn-primary-text {
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: bold;
+  }
+
+  .t-btn-secondary {
+    height: 48px;
+    border-radius: 12px;
+    border-width: 1px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .theme-light .t-btn-secondary {
+    border-color: #dde1ea;
+    background-color: #ffffff;
+  }
+
+  .theme-dark .t-btn-secondary {
+    border-color: #333355;
+    background-color: transparent;
+  }
+
+  .theme-light .t-btn-secondary-text { color: #6b7280; }
+  .theme-dark .t-btn-secondary-text { color: #8888a0; }
+
+  /* ---- 芯片 ---- */
+  .t-chip {
+    padding: 8px 14px;
+    border-radius: 20px;
+    border-width: 1px;
+    margin-right: 8px;
+    margin-bottom: 8px;
+  }
+
+  .theme-light .t-chip { border-color: #dde1ea; background-color: #ffffff; }
+  .theme-dark .t-chip { border-color: #333355; background-color: transparent; }
+
+  .theme-light .t-chip-active { border-color: #635bff; background-color: #ede9fe; }
+  .theme-dark .t-chip-active { border-color: #6c63ff; background-color: #2a2a55; }
+
+  .t-chip-text { font-size: 13px; }
+  .theme-light .t-chip .t-chip-text { color: #6b7280; }
+  .theme-dark .t-chip .t-chip-text { color: #8888a0; }
+  .theme-light .t-chip-active .t-chip-text { color: #4338ca; }
+  .theme-dark .t-chip-active .t-chip-text { color: #e8e8f0; }
+
+  /* ---- 平台/主题切换 ---- */
+  .t-segment-row { flex-direction: row; }
+
+  .t-segment-btn {
+    flex: 1;
+    height: 42px;
+    border-radius: 10px;
+    border-width: 1px;
+    align-items: center;
+    justify-content: center;
+    margin-right: 8px;
+  }
+
+  .theme-light .t-segment-btn { border-color: #dde1ea; background-color: #ffffff; }
+  .theme-dark .t-segment-btn { border-color: #333355; background-color: transparent; }
+
+  .theme-light .t-segment-btn-active { border-color: #635bff; background-color: #ede9fe; }
+  .theme-dark .t-segment-btn-active { border-color: #6c63ff; background-color: #2a2a55; }
+
+  .t-segment-text { font-size: 14px; }
+  .theme-light .t-segment-btn .t-segment-text { color: #6b7280; }
+  .theme-dark .t-segment-btn .t-segment-text { color: #e8e8f0; }
+  .theme-light .t-segment-btn-active .t-segment-text { color: #4338ca; font-weight: bold; }
+  .theme-dark .t-segment-btn-active .t-segment-text { color: #e8e8f0; font-weight: bold; }
+
+  /* ---- 信息块 ---- */
+  .t-info-box {
+    border-radius: 12px;
+    padding: 16px;
+  }
+
+  .theme-light .t-info-box {
+    background-color: #ffffff;
+    border-width: 1px;
+    border-color: #e8ebf2;
+  }
+
+  .theme-dark .t-info-box {
+    background-color: #1a1a2e;
+    border-width: 1px;
+    border-color: #2a2a45;
+  }
+
+  /* ---- 底部栏 / FAB ---- */
+  .t-bottom-bar {
+    flex-direction: row;
+    border-top-width: 1px;
+    padding: 8px 0;
+  }
+
+  .theme-light .t-bottom-bar {
+    background-color: #ffffff;
+    border-top-color: #e8ebf2;
+  }
+
+  .theme-dark .t-bottom-bar {
+    background-color: #1a1a2e;
+    border-top-color: #222240;
+  }
+
+  .t-bar-btn {
+    flex: 1;
+    align-items: center;
+    padding: 8px 0;
+  }
+
+  .t-bar-btn-text { font-size: 14px; }
+  .theme-light .t-bar-btn-text { color: #6b7280; }
+  .theme-dark .t-bar-btn-text { color: #8888a0; }
+
+  .t-fab {
+    position: fixed;
+    right: 24px;
+    bottom: 80px;
+    width: 54px;
+    height: 54px;
+    border-radius: 27px;
+    background-color: #635bff;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .t-fab-text {
+    font-size: 28px;
+    color: #ffffff;
+    font-weight: bold;
+  }
+
+  .t-action-btn {
+    padding: 6px 12px;
+    border-radius: 8px;
+    margin-left: 8px;
+  }
+
+  .theme-light .t-action-btn { background-color: #ede9fe; }
+  .theme-dark .t-action-btn { background-color: #2a2a45; }
+
+  .t-action-text { font-size: 12px; color: #635bff; }
+  .theme-dark .t-action-text { color: #8b83ff; }
+
+  /* ---- 主题切换按钮 ---- */
+  .t-theme-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 20px;
+    align-items: center;
+    justify-content: center;
+    border-width: 1px;
+  }
+
+  .theme-light .t-theme-btn {
+    background-color: #ffffff;
+    border-color: #e8ebf2;
+  }
+
+  .theme-dark .t-theme-btn {
+    background-color: #1a1a2e;
+    border-color: #333355;
+  }
+
+  .t-theme-btn-text { font-size: 18px; }
+
+  .weak { color: #e03131; }
+  .medium { color: #f08c00; }
+  .strong { color: #2f9e44; }
 </style>

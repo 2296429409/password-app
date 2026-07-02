@@ -1,73 +1,146 @@
 <template>
-  <view class="unlock-page">
+  <view :class="['page-shell', themeClass, 'unlock-page']">
+    <view class="top-bar">
+      <view class="t-theme-btn" @click="handleToggleTheme">
+        <text class="t-theme-btn-text">{{ themeMode == 'light' ? '🌙' : '☀️' }}</text>
+      </view>
+    </view>
+
     <view class="logo-area">
-      <text class="logo-icon">🔐</text>
-      <text class="logo-title">VaultSync</text>
-      <text class="logo-sub">密钥文件解锁 · 多密码库 · Git 同步</text>
+      <view class="logo-badge">
+        <text class="logo-icon">🔐</text>
+      </view>
+      <text class="logo-title t-text-primary">VaultSync</text>
+      <text class="logo-sub t-text-secondary">密钥文件解锁 · 多密码库 · Git 同步</text>
     </view>
 
     <view class="section" v-if="vaultList.length > 0">
-      <text class="section-title">已缓存的密码库（点击打开）</text>
+      <text class="section-title t-section-label t-text-secondary">已缓存的密码库</text>
       <scroll-view class="vault-list" scroll-y="true">
         <view
           v-for="(item, index) in vaultList"
           :key="item.vault_id"
-          class="vault-card"
+          class="t-card t-card-row vault-card"
           @click="openCached(item.vault_id)"
           @longpress="removeCached(item.vault_id)"
         >
           <view class="vault-main">
-            <text class="vault-name">{{ item.vault_name }}</text>
-            <text class="vault-path">Git: {{ item.git_vault_path }}</text>
+            <text class="vault-name t-text-primary">{{ item.vault_name }}</text>
+            <text class="vault-path t-text-accent">Git: {{ item.git_vault_path }}</text>
+            <text class="vault-expiry t-text-muted">缓存：{{ expiryLabel(item.expires_at) }}</text>
           </view>
-          <text class="vault-arrow">→</text>
+          <text class="vault-arrow t-text-muted">→</text>
         </view>
       </scroll-view>
-      <text class="hint">长按可移除本地缓存（不删除 Git 数据）</text>
+      <text class="hint t-text-muted">长按可移除本地缓存（不删除 Git 数据）</text>
+    </view>
+
+    <view class="cache-panel t-info-box">
+      <view class="cache-panel-header">
+        <view class="cache-panel-title-row">
+          <text class="cache-panel-icon">🕐</text>
+          <text class="cache-panel-title t-text-primary">密钥缓存时长</text>
+        </view>
+        <view class="cache-panel-badge">
+          <text class="cache-panel-badge-text t-text-accent">{{ cacheDurationLabel() }}</text>
+        </view>
+      </view>
+      <text class="cache-panel-desc t-text-muted">导入或打开密码库时，密钥在本机保留的时间</text>
+      <view class="cache-grid">
+        <view
+          v-for="(opt, index) in cacheOptions"
+          :key="index"
+          class="cache-option"
+          :class="cacheDurationMs == opt.ms ? 'cache-option-active' : ''"
+          @click="selectCacheDuration(opt.ms)"
+        >
+          <text
+            class="cache-option-text"
+            :class="cacheDurationMs == opt.ms ? 'cache-option-text-active' : ''"
+          >{{ opt.label }}</text>
+        </view>
+      </view>
     </view>
 
     <view class="actions">
-      <view class="btn-primary" @click="chooseKeyFile">
-        <text class="btn-text">导入密钥文件</text>
+      <view class="t-btn-primary" @click="chooseKeyFile">
+        <text class="t-btn-primary-text">导入密钥文件</text>
       </view>
-      <view class="btn-secondary" @click="goCreate">
-        <text class="btn-secondary-text">创建新密码库</text>
+      <view class="t-btn-secondary actions-gap" @click="goCreate">
+        <text class="t-btn-secondary-text">创建新密码库</text>
       </view>
     </view>
 
     <view class="footer">
-      <text class="footer-text" @click="goSettings">Git 同步设置 →</text>
+      <text class="footer-text t-text-accent" @click="goSettings">Git 同步设置 →</text>
     </view>
   </view>
 </template>
 
 <script lang="uts">
   import { vaultStore } from '@/store/vaultStore.uts'
-  import type { VaultSummary, KeyFile } from '@/types/vault.uts'
+  import type { VaultSummary, KeyFile, KeyCacheOption } from '@/types/vault.uts'
   import {
     loadVaultIndex, loadCachedKeyFile, loadActiveVaultId,
-    removeCachedKeyFile, gitConfigForVault
+    removeCachedKeyFile, gitConfigForVault,
+    KEY_CACHE_OPTIONS, loadKeyCacheDurationMs, saveKeyCacheDurationMs,
+    formatCacheExpiry
   } from '@/utils/storage.uts'
   import { parseKeyFile } from '@/utils/keyfile.uts'
-  import { readTextFromChooseFile, type ChooseFileResult } from '@/utils/fileio.uts'
   import { validateGitConnection } from '@/utils/git.uts'
+  import { syncPageTheme, toggleThemeMode, type ThemeMode } from '@/utils/theme.uts'
+
+// #ifdef APP-ANDROID
+  import { Context } from 'android.content'
+  import { Uri } from 'android.net'
+  import { BufferedReader } from 'java.io'
+  import { InputStreamReader } from 'java.io'
+// #endif
 
   export default {
     data() {
       return {
         vaultList: [] as VaultSummary[],
-        isLoading: false
+        isLoading: false,
+        cacheOptions: KEY_CACHE_OPTIONS as KeyCacheOption[],
+        cacheDurationMs: -1,
+        themeClass: 'theme-light',
+        themeMode: 'light' as ThemeMode
       }
     },
     onShow() {
+      const theme = syncPageTheme()
+      this.themeClass = theme.className
+      this.themeMode = theme.mode
       if (vaultStore.isUnlocked) {
         uni.reLaunch({ url: '/pages/index/index' })
         return
       }
+      this.cacheDurationMs = loadKeyCacheDurationMs()
       this.vaultList = loadVaultIndex()
       this.tryAutoOpen()
     },
     methods: {
+      handleToggleTheme() {
+        const theme = toggleThemeMode()
+        this.themeClass = theme.className
+        this.themeMode = theme.mode
+      },
+      expiryLabel(expiresAt : string | null) : string {
+        return formatCacheExpiry(expiresAt)
+      },
+      cacheDurationLabel() : string {
+        for (let i = 0; i < this.cacheOptions.length; i++) {
+          if (this.cacheOptions[i].ms == this.cacheDurationMs) {
+            return this.cacheOptions[i].label
+          }
+        }
+        return '永久'
+      },
+      selectCacheDuration(ms : number) {
+        this.cacheDurationMs = ms
+        saveKeyCacheDurationMs(ms)
+      },
       tryAutoOpen() {
         const activeId = loadActiveVaultId()
         if (activeId.length == 0) return
@@ -83,10 +156,10 @@
         }
         this.openKeyFile(keyFile, true)
       },
-      openKeyFile(keyFile : KeyFile, showLoading : boolean) {
+      openKeyFile(keyFile : KeyFile, showLoading : boolean, cacheDurationMs : number = -1) {
         if (showLoading) uni.showLoading({ title: '打开中...' })
         this.isLoading = true
-        vaultStore.openFromGit(keyFile).then((ok) => {
+        vaultStore.openFromGit(keyFile, cacheDurationMs).then((ok) => {
           if (showLoading) uni.hideLoading()
           this.isLoading = false
           if (ok) {
@@ -106,7 +179,51 @@
           count: 1,
           extension: ['.vaultkey', '.json'],
           success: (res) => {
-            this.handleChosenKeyFile(res as ChooseFileResult)
+            let path = ''
+            if (res.tempFilePaths != null && res.tempFilePaths.length > 0) {
+              path = res.tempFilePaths[0]
+            } else if (res.tempFiles != null && res.tempFiles.length > 0) {
+              path = res.tempFiles[0].path
+            }
+            if (path == null || path.length == 0) {
+              uni.showToast({ title: '读取文件路径失败', icon: 'none' })
+              return
+            }
+            const fs = uni.getFileSystemManager()
+            // #ifdef APP-ANDROID
+            try {
+              const appContext = UTSAndroid.getAppContext() as Context
+              const uri = Uri.parse(path)
+              const inputStream = appContext.getContentResolver().openInputStream(uri)
+              if (inputStream != null) {
+                const reader = new BufferedReader(new InputStreamReader(inputStream, 'UTF-8'))
+                let content = ''
+                let line = reader.readLine()
+                while (line != null) {
+                  content += line + '\n'
+                  line = reader.readLine()
+                }
+                reader.close()
+                if (content.length > 0) {
+                  this.parseAndImportKeyContent(content)
+                } else {
+                  uni.showToast({ title: '文件内容为空', icon: 'none' })
+                }
+              } else {
+                uni.showToast({ title: '无法打开文件', icon: 'none' })
+              }
+            } catch (readErr) {
+              uni.showToast({ title: '读取文件失败', icon: 'none', duration: 2500 })
+            }
+            // #endif
+            // #ifdef APP-IOS
+            try {
+              const readRes = fs.readFileSync(path, 'utf-8')
+              this.parseAndImportKeyContent(readRes as string)
+            } catch (readErr) {
+              uni.showToast({ title: '读取文件失败', icon: 'none', duration: 2500 })
+            }
+            // #endif
           },
           fail: () => {
             uni.showToast({ title: '未选择文件', icon: 'none' })
@@ -139,19 +256,12 @@
         input.click()
       },
       // #endif
-      handleChosenKeyFile(res : ChooseFileResult) {
-        readTextFromChooseFile(res, (content) => {
-          this.parseAndImportKeyContent(content)
-        }, () => {
-          uni.showToast({ title: '读取文件失败', icon: 'none' })
-        })
-      },
       parseAndImportKeyContent(content : string) {
         try {
           const keyFile = parseKeyFile(content)
           this.importKeyFile(keyFile)
         } catch (e) {
-          uni.showToast({ title: '密钥文件无效，请确认是 .vaultkey 文件', icon: 'none', duration: 2500 })
+          uni.showToast({ title: '密钥文件无效：' + JSON.stringify(e), icon: 'none', duration: 3000 })
         }
       },
       importKeyFile(keyFile : KeyFile) {
@@ -173,7 +283,7 @@
             })
             return
           }
-          this.openKeyFile(keyFile, true)
+          this.openKeyFile(keyFile, true, this.cacheDurationMs)
         })
       },
       removeCached(vaultId : string) {
@@ -201,67 +311,136 @@
 
 <style>
   .unlock-page {
-    flex: 1;
-    flex-direction: column;
-    padding: 32px 24px;
-    background-color: #0f0f1a;
+    padding: 16px 20px 24px 20px;
+  }
+
+  .top-bar {
+    flex-direction: row;
+    justify-content: flex-end;
+    margin-bottom: 8px;
   }
 
   .logo-area {
     flex-direction: column;
     align-items: center;
-    margin-bottom: 24px;
+    margin-bottom: 28px;
   }
 
-  .logo-icon { font-size: 48px; margin-bottom: 8px; }
-  .logo-title { font-size: 26px; font-weight: bold; color: #e8e8f0; margin-bottom: 4px; }
-  .logo-sub { font-size: 13px; color: #8888a0; text-align: center; }
+  .logo-badge {
+    width: 72px;
+    height: 72px;
+    border-radius: 20px;
+    background-color: #635bff;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 14px;
+  }
+
+  .logo-icon { font-size: 36px; }
+  .logo-title { font-size: 28px; font-weight: bold; margin-bottom: 6px; }
+  .logo-sub { font-size: 13px; text-align: center; }
 
   .section { flex: 1; margin-bottom: 16px; }
-  .section-title { font-size: 14px; color: #8888a0; margin-bottom: 10px; }
+  .section-title { margin-bottom: 10px; }
 
-  .vault-list { max-height: 280px; }
+  .vault-list { max-height: 240px; }
+  .vault-card { margin-bottom: 10px; }
+  .vault-main { flex: 1; flex-direction: column; }
+  .vault-name { font-size: 16px; font-weight: bold; margin-bottom: 4px; }
+  .vault-path { font-size: 12px; margin-bottom: 2px; }
+  .vault-expiry { font-size: 11px; }
+  .vault-arrow { font-size: 18px; margin-left: 8px; }
 
-  .vault-card {
+  .hint { font-size: 11px; margin-top: 6px; }
+
+  .cache-panel { margin-bottom: 20px; }
+
+  .cache-panel-header {
     flex-direction: row;
     align-items: center;
-    background-color: #1a1a2e;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .cache-panel-title-row {
+    flex-direction: row;
+    align-items: center;
+    flex: 1;
+  }
+
+  .cache-panel-icon { font-size: 18px; margin-right: 8px; }
+
+  .cache-panel-title {
+    font-size: 15px;
+    font-weight: bold;
+  }
+
+  .cache-panel-badge {
+    padding: 4px 10px;
+    border-radius: 12px;
+  }
+
+  .theme-light .cache-panel-badge { background-color: #ede9fe; }
+  .theme-dark .cache-panel-badge { background-color: #2a2a55; }
+
+  .cache-panel-badge-text {
+    font-size: 12px;
+    font-weight: bold;
+  }
+
+  .cache-panel-desc {
+    font-size: 12px;
+    line-height: 18px;
+    margin-bottom: 14px;
+  }
+
+  .cache-grid {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .cache-option {
+    width: 31%;
+    height: 42px;
     border-radius: 10px;
-    padding: 14px 16px;
+    border-width: 1px;
+    align-items: center;
+    justify-content: center;
     margin-bottom: 10px;
   }
 
-  .vault-main { flex: 1; flex-direction: column; }
-  .vault-name { font-size: 16px; color: #e8e8f0; font-weight: bold; margin-bottom: 4px; }
-  .vault-path { font-size: 12px; color: #6c63ff; }
-  .vault-arrow { font-size: 18px; color: #8888a0; }
+  .theme-light .cache-option {
+    border-color: #e8ebf2;
+    background-color: #f8f9fc;
+  }
 
-  .hint { font-size: 11px; color: #555570; margin-top: 6px; }
+  .theme-dark .cache-option {
+    border-color: #333355;
+    background-color: #12121f;
+  }
+
+  .theme-light .cache-option-active {
+    border-color: #635bff;
+    background-color: #ede9fe;
+  }
+
+  .theme-dark .cache-option-active {
+    border-color: #6c63ff;
+    background-color: #2a2a55;
+  }
+
+  .cache-option-text { font-size: 13px; }
+
+  .theme-light .cache-option-text { color: #6b7280; }
+  .theme-dark .cache-option-text { color: #8888a0; }
+
+  .theme-light .cache-option-text-active { color: #4338ca; font-weight: bold; }
+  .theme-dark .cache-option-text-active { color: #e8e8f0; font-weight: bold; }
 
   .actions { flex-direction: column; margin-bottom: 16px; }
-
-  .btn-primary {
-    height: 48px;
-    background-color: #6c63ff;
-    border-radius: 8px;
-    align-items: center;
-    justify-content: center;
-    margin-bottom: 10px;
-  }
-
-  .btn-text { color: #ffffff; font-size: 16px; font-weight: bold; }
-
-  .btn-secondary {
-    height: 48px;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: #333355;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .btn-secondary-text { color: #8888a0; font-size: 14px; }
+  .actions-gap { margin-top: 10px; }
 
   .footer { align-items: center; padding: 8px 0; }
-  .footer-text { font-size: 14px; color: #6c63ff; }
+  .footer-text { font-size: 14px; font-weight: bold; }
 </style>

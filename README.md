@@ -18,10 +18,10 @@
 │  .vaultkey      │  ←  vault_id、库名、master_key、git_vault_path
 │  密钥文件        │
 └────────┬────────┘
-         │ AES-256-CBC 加解密
+         │ AES-256-GCM 加解密（含 auth_tag）
          ▼
 ┌─────────────────┐     提交到 Git 仓库
-│  名称_id.enc    │  ←  encrypted_data、iv、revision（不含密钥）
+│  名称_id.enc    │  ←  encrypted_data、iv、auth_tag、revision（不含密钥）
 │  密文文件        │
 └─────────────────┘
 ```
@@ -30,7 +30,8 @@
 |------|------|
 | **密钥文件** `.vaultkey` | 含 `vault_id`、`vault_name`、`master_key`（Base64）、`git_vault_path` |
 | **密文文件** `工作_abc12345.enc` | 文件名由库名 + ID 前缀生成，仅存加密数据 |
-| **加密算法** | AES-256-CBC，主密钥 32 字节保存在密钥文件中 |
+| **加密算法** | AES-256-GCM（含认证标签 `auth_tag`，防篡改） |
+| **随机数** | `crypto.getRandomValues` 生成主密钥与 GCM nonce |
 | **Git 配置** | 全局一份（owner / repo / branch / token），各库使用自己的 `git_vault_path` |
 
 ## 技术栈
@@ -53,7 +54,7 @@
 │   └── vaultStore.uts        # 解锁、同步、CRUD 状态
 ├── utils/
 │   ├── keyfile.uts           # 密钥文件生成/解析/下载
-│   ├── crypto.uts            # AES-256-CBC、Base64
+│   ├── crypto.uts            # AES-256-GCM、Base64、安全随机数
 │   ├── vault.uts             # 密码库加解密与条目操作
 │   ├── git.uts               # GitHub/Gitee pull/push
 │   ├── storage.uts           # 多库索引、密钥缓存
@@ -152,8 +153,8 @@ H5 使用 hash 路由，入口为 `index.html`。
 **同步 409 冲突**  
 应用会在推送前获取最新 `sha` 并重试；若仍失败，可先手动同步再编辑。
 
-**旧版 `vault.enc` 数据**  
-早期主密码体系与当前密钥文件体系不兼容，需在 Git 删除旧文件后重新创建密码库。
+**无法解密 Git 上的旧密文**  
+仅支持 AES-256-GCM 格式。若仓库中仍有旧版 CBC 密文，请删除对应 `.enc` 后重新创建密码库并同步。
 
 ## 许可证
 

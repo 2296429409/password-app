@@ -1,0 +1,77 @@
+/**
+ * 主题：浅色（默认）/ 深色
+ */
+
+export type ThemeMode = 'light' | 'dark'
+
+const THEME_STORAGE_KEY = 'vaultsync_theme'
+
+export type PageThemeState = {
+  mode : ThemeMode
+  className : string
+}
+
+export function loadThemeMode() : ThemeMode {
+  const raw = uni.getStorageSync(THEME_STORAGE_KEY) as string | null
+  if (raw == 'dark') return 'dark'
+  return 'light'
+}
+
+export function saveThemeMode(mode : ThemeMode) : void {
+  uni.setStorageSync(THEME_STORAGE_KEY, mode)
+}
+
+export function themeClassName(mode : ThemeMode) : string {
+  if (mode == 'dark') return 'theme-dark'
+  return 'theme-light'
+}
+
+/** unlock 使用 custom 导航栏，调用 setNavigationBarColor 会崩溃 */
+const CUSTOM_NAV_ROUTES = ['pages/unlock/unlock']
+
+function canSetNavigationBarColor() : boolean {
+  const pages = getCurrentPages()
+  if (pages.length == 0) return false
+  const route = pages[pages.length - 1].route as string
+  for (let i = 0; i < CUSTOM_NAV_ROUTES.length; i++) {
+    if (route == CUSTOM_NAV_ROUTES[i]) return false
+  }
+  return true
+}
+
+function applyNavigationBarTheme(mode : ThemeMode) : void {
+  if (!canSetNavigationBarColor()) return
+  const isDark = mode == 'dark'
+  uni.setNavigationBarColor({
+    frontColor: isDark ? '#ffffff' : '#000000',
+    backgroundColor: isDark ? '#1a1a2e' : '#ffffff'
+  })
+}
+
+export function applyTheme(mode : ThemeMode) : void {
+  applyNavigationBarTheme(mode)
+  // #ifdef WEB || H5
+  const doc = document.documentElement
+  doc.classList.remove('theme-light', 'theme-dark')
+  doc.classList.add(themeClassName(mode))
+  // #endif
+}
+
+export function syncPageTheme() : PageThemeState {
+  const mode = loadThemeMode()
+  applyTheme(mode)
+  return {
+    mode: mode,
+    className: themeClassName(mode)
+  }
+}
+
+export function toggleThemeMode() : PageThemeState {
+  const next : ThemeMode = loadThemeMode() == 'light' ? 'dark' : 'light'
+  saveThemeMode(next)
+  applyTheme(next)
+  return {
+    mode: next,
+    className: themeClassName(next)
+  }
+}

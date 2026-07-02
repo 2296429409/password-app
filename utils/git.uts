@@ -4,7 +4,9 @@
  */
 
 import type { GitConfig, RemoteFileInfo } from '@/types/vault.uts'
+import { asRequestSuccess } from '@/types/http.uts'
 import { base64Encode, base64Decode, stringToBytes } from '@/utils/crypto.uts'
+import { errorMessage } from '@/utils/error.uts'
 
 type RequestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
@@ -73,18 +75,19 @@ function gitRequest(config : GitConfig, method : RequestMethod, url : string, bo
   })
 }
 
-function handleGitResponse(res : any, resolve : (v : UTSJSONObject) => void, reject : (e : Error) => void) : void {
-  const code = res.statusCode
+function handleGitResponse(res : RequestSuccess<any>, resolve : (v : UTSJSONObject) => void, reject : (e : Error) => void) : void {
+  const r = asRequestSuccess(res)
+  const code = r.statusCode
   if (code >= 200 && code < 300) {
-    if (res.data != null) {
-      resolve(res.data as UTSJSONObject)
+    if (r.data != null) {
+      resolve(r.data as UTSJSONObject)
     } else {
       resolve(new UTSJSONObject())
     }
   } else {
     let detail = ''
-    if (res.data != null) {
-      const errBody = res.data as UTSJSONObject
+    if (r.data != null) {
+      const errBody = r.data as UTSJSONObject
       const msg = errBody.get('message')
       if (msg != null) detail = ' ' + (msg as string)
     }
@@ -111,13 +114,14 @@ export function fetchRemoteSha(config : GitConfig) : Promise<string | null> {
       method: 'GET',
       header: buildAuthHeader(config),
       success: (res) => {
-        if (res.statusCode == 200) {
-          const body = res.data as UTSJSONObject
+        const r = asRequestSuccess(res)
+        if (r.statusCode == 200) {
+          const body = r.data as UTSJSONObject
           resolve(body.get('sha') as string)
-        } else if (res.statusCode == 404) {
+        } else if (r.statusCode == 404) {
           resolve(null)
         } else {
-          reject(new Error('查询远程文件失败: HTTP ' + res.statusCode))
+          reject(new Error('查询远程文件失败: HTTP ' + r.statusCode))
         }
       },
       fail: (err) => {
@@ -135,15 +139,16 @@ export function pullVault(config : GitConfig) : Promise<RemoteFileInfo> {
       method: 'GET',
       header: buildAuthHeader(config),
       success: (res) => {
-        if (res.statusCode == 200) {
-          const body = res.data as UTSJSONObject
+        const r = asRequestSuccess(res)
+        if (r.statusCode == 200) {
+          const body = r.data as UTSJSONObject
           const contentB64 = body.get('content') as string
           const sha = body.get('sha') as string
           resolve({ content: decodeGitContent(contentB64), sha: sha })
-        } else if (res.statusCode == 404) {
+        } else if (r.statusCode == 404) {
           reject(new Error('远程仓库中未找到 vault 文件'))
         } else {
-          reject(new Error('拉取失败: HTTP ' + res.statusCode))
+          reject(new Error('拉取失败: HTTP ' + r.statusCode))
         }
       },
       fail: (err) => {
@@ -158,20 +163,30 @@ function pushGithubInitialCommit(config : GitConfig, contentB64 : string, messag
   const base = getApiBase(config)
   const repoUrl = `${base}/repos/${config.owner}/${config.repo}`
 
-  return gitRequest(config, 'POST', `${repoUrl}/git/blobs`, '{"content":"' + contentB64 + '","encoding":"base64"}').then((blobRes) => {
-    const blobSha = blobRes.get('sha') as string
-    const treeJson = '{"tree":[{"path":"' + config.vault_path + '","mode":"100644","type":"blob","sha":"' + blobSha + '"}]}'
-    return gitRequest(config, 'POST', `${repoUrl}/git/trees`, treeJson)
-  }).then((treeRes) => {
-    const treeSha = treeRes.get('sha') as string
-    const commitJson = '{"message":"' + message + '","tree":"' + treeSha + '","parents":[]}'
-    return gitRequest(config, 'POST', `${repoUrl}/git/commits`, commitJson)
-  }).then((commitRes) => {
-    const commitSha = commitRes.get('sha') as string
-    const refJson = '{"ref":"refs/heads/' + config.branch + '","sha":"' + commitSha + '"}'
-    return gitRequest(config, 'POST', `${repoUrl}/git/refs`, refJson)
-  }).then(() => {
-    // created
+  return new Promise<void>((resolve, reject) => {
+    gitRequest(config, 'POST', `${repoUrl}/git/blobs`, '{"content":"' + contentB64 + '","encoding":"base64"}').then((blobRes) => {
+      const blobSha = blobRes.get('sha') as string
+      const treeJson = '{"tree":[{"path":"' + config.vault_path + '","mode":"100644","type":"blob","sha":"' + blobSha + '"}]}'
+      gitRequest(config, 'POST', `${repoUrl}/git/trees`, treeJson).then((treeRes) => {
+        const treeSha = treeRes.get('sha') as string
+        const commitJson = '{"message":"' + message + '","tree":"' + treeSha + '","parents":[]}'
+        gitRequest(config, 'POST', `${repoUrl}/git/commits`, commitJson).then((commitRes) => {
+          const commitSha = commitRes.get('sha') as string
+          const refJson = '{"ref":"refs/heads/' + config.branch + '","sha":"' + commitSha + '"}'
+          gitRequest(config, 'POST', `${repoUrl}/git/refs`, refJson).then(() => {
+            resolve()
+          }).catch((err) => {
+            reject(err)
+          })
+        }).catch((err) => {
+          reject(err)
+        })
+      }).catch((err) => {
+        reject(err)
+      })
+    }).catch((err) => {
+      reject(err)
+    })
   })
 }
 
@@ -180,28 +195,42 @@ function pushGithubWithHeadTree(config : GitConfig, contentB64 : string, message
   const base = getApiBase(config)
   const repoUrl = `${base}/repos/${config.owner}/${config.repo}`
 
-  return gitRequest(config, 'GET', `${repoUrl}/git/ref/heads/${config.branch}`, null).then((refRes) => {
-    const headCommitSha = refRes.get('object') as UTSJSONObject
-    const parentSha = headCommitSha.get('sha') as string
-    return gitRequest(config, 'GET', `${repoUrl}/git/commits/${parentSha}`, null).then((commitRes) => {
-      const baseTreeSha = commitRes.get('tree') as UTSJSONObject
-      const treeSha = baseTreeSha.get('sha') as string
-      return gitRequest(config, 'POST', `${repoUrl}/git/blobs`, '{"content":"' + contentB64 + '","encoding":"base64"}').then((blobRes) => {
-        const blobSha = blobRes.get('sha') as string
-        const treeJson = '{"base_tree":"' + treeSha + '","tree":[{"path":"' + config.vault_path + '","mode":"100644","type":"blob","sha":"' + blobSha + '"}]}'
-        return gitRequest(config, 'POST', `${repoUrl}/git/trees`, treeJson).then((newTreeRes) => {
-          const newTreeSha = newTreeRes.get('sha') as string
-          const commitJson = '{"message":"' + message + '","tree":"' + newTreeSha + '","parents":["' + parentSha + '"]}'
-          return gitRequest(config, 'POST', `${repoUrl}/git/commits`, commitJson).then((newCommitRes) => {
-            const newCommitSha = newCommitRes.get('sha') as string
-            const patchJson = '{"sha":"' + newCommitSha + '","force":false}'
-            return gitRequest(config, 'PATCH', `${repoUrl}/git/refs/heads/${config.branch}`, patchJson)
+  return new Promise<void>((resolve, reject) => {
+    gitRequest(config, 'GET', `${repoUrl}/git/ref/heads/${config.branch}`, null).then((refRes) => {
+      const headCommitSha = refRes.get('object') as UTSJSONObject
+      const parentSha = headCommitSha.get('sha') as string
+      gitRequest(config, 'GET', `${repoUrl}/git/commits/${parentSha}`, null).then((commitRes) => {
+        const baseTreeSha = commitRes.get('tree') as UTSJSONObject
+        const treeSha = baseTreeSha.get('sha') as string
+        gitRequest(config, 'POST', `${repoUrl}/git/blobs`, '{"content":"' + contentB64 + '","encoding":"base64"}').then((blobRes) => {
+          const blobSha = blobRes.get('sha') as string
+          const treeJson = '{"base_tree":"' + treeSha + '","tree":[{"path":"' + config.vault_path + '","mode":"100644","type":"blob","sha":"' + blobSha + '"}]}'
+          gitRequest(config, 'POST', `${repoUrl}/git/trees`, treeJson).then((newTreeRes) => {
+            const newTreeSha = newTreeRes.get('sha') as string
+            const commitJson = '{"message":"' + message + '","tree":"' + newTreeSha + '","parents":["' + parentSha + '"]}'
+            gitRequest(config, 'POST', `${repoUrl}/git/commits`, commitJson).then((newCommitRes) => {
+              const newCommitSha = newCommitRes.get('sha') as string
+              const patchJson = '{"sha":"' + newCommitSha + '","force":false}'
+              gitRequest(config, 'PATCH', `${repoUrl}/git/refs/heads/${config.branch}`, patchJson).then(() => {
+                resolve()
+              }).catch((err) => {
+                reject(err)
+              })
+            }).catch((err) => {
+              reject(err)
+            })
+          }).catch((err) => {
+            reject(err)
           })
+        }).catch((err) => {
+          reject(err)
         })
+      }).catch((err) => {
+        reject(err)
       })
+    }).catch((err) => {
+      reject(err)
     })
-  }).then(() => {
-    // updated
   })
 }
 
@@ -215,13 +244,14 @@ function pushVaultOnce(config : GitConfig, content : string, sha : string | null
       header: buildAuthHeader(config),
       data: body,
       success: (res) => {
-        const code = res.statusCode
+        const r = asRequestSuccess(res)
+        const code = r.statusCode
         if (code == 200 || code == 201) {
           resolve()
         } else {
           let detail = ''
-          if (res.data != null) {
-            const errBody = res.data as UTSJSONObject
+          if (r.data != null) {
+            const errBody = r.data as UTSJSONObject
             const msg = errBody.get('message')
             if (msg != null) detail = ' ' + (msg as string)
           }
@@ -239,29 +269,48 @@ function pushVaultOnce(config : GitConfig, content : string, sha : string | null
 export function pushVault(config : GitConfig, content : string, sha : string | null, message : string) : Promise<void> {
   const contentB64 = base64Encode(stringToBytes(content))
 
-  return pushVaultOnce(config, content, sha, message).catch((err : Error) => {
-    const msg = err.message
-    const is409 = msg.indexOf('409') >= 0
-
-    if (!is409) throw err
-
-    // 409：先刷新 sha 重试
-    return fetchRemoteSha(config).then((freshSha) => {
-      if (freshSha != null && freshSha.length > 0) {
-        return pushVaultOnce(config, content, freshSha, message)
+  return new Promise<void>((resolve, reject) => {
+    pushVaultOnce(config, content, sha, message).then(() => {
+      resolve()
+    }).catch((err) => {
+      const msg = errorMessage(err)
+      const is409 = msg.indexOf('409') >= 0
+      if (!is409) {
+        reject(err)
+        return
       }
-      // 远程无此文件，不带 sha 创建
-      return pushVaultOnce(config, content, null, message)
-    }).catch((err2 : Error) => {
-      if (err2.message.indexOf('409') < 0) throw err2
 
-      // 仍 409：GitHub 空仓库，走 Git Data API
-      if (config.platform == 'github') {
-        return pushGithubInitialCommit(config, contentB64, message).catch(() => {
-          return pushGithubWithHeadTree(config, contentB64, message)
+      fetchRemoteSha(config).then((freshSha) => {
+        let retrySha : string | null = null
+        if (freshSha != null && freshSha.length > 0) {
+          retrySha = freshSha
+        }
+        pushVaultOnce(config, content, retrySha, message).then(() => {
+          resolve()
+        }).catch((err2) => {
+          const msg2 = errorMessage(err2)
+          if (msg2.indexOf('409') < 0) {
+            reject(err2)
+            return
+          }
+
+          if (config.platform == 'github') {
+            pushGithubInitialCommit(config, contentB64, message).then(() => {
+              resolve()
+            }).catch(() => {
+              pushGithubWithHeadTree(config, contentB64, message).then(() => {
+                resolve()
+              }).catch((err3) => {
+                reject(err3)
+              })
+            })
+          } else {
+            reject(new Error('推送失败：仓库可能为空或分支名不正确，请先在 GitHub 创建 README 或检查分支设置'))
+          }
         })
-      }
-      throw new Error('推送失败：仓库可能为空或分支名不正确，请先在 GitHub 创建 README 或检查分支设置')
+      }).catch((err2) => {
+        reject(err2)
+      })
     })
   })
 }
@@ -276,12 +325,13 @@ export function isGitConfigured(config : GitConfig) : boolean {
  * @returns 空字符串表示通过，否则为错误说明
  */
 export function validateGitConnection(config : GitConfig) : Promise<string> {
-  return new Promise<string>((resolve) => {
-    if (!isGitConfigured(config)) {
+  if (!isGitConfigured(config)) {
+    return new Promise<string>((resolve) => {
       resolve('请先在「Git 同步设置」中填写仓库与 Token')
-      return
-    }
-    testConnection(config).then((ok) => {
+    })
+  }
+  return new Promise<string>((resolve) => {
+    testConnection(config).then((ok : boolean) => {
       if (ok) {
         resolve('')
       } else {
@@ -306,7 +356,8 @@ export function testConnection(config : GitConfig) : Promise<boolean> {
       method: 'GET',
       header: buildAuthHeader(config),
       success: (res) => {
-        resolve(res.statusCode == 200)
+        const r = asRequestSuccess(res)
+        resolve(r.statusCode == 200)
       },
       fail: () => {
         resolve(false)

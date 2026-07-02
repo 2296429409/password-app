@@ -1,0 +1,47 @@
+/**
+ * 网址规范化与在新标签页/系统浏览器打开
+ */
+
+export function normalizeUrl(raw : string) : string {
+  let url = raw.trim()
+  if (url.length == 0) return ''
+  const lower = url.toLowerCase()
+  if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+    url = 'https://' + url
+  }
+  return url
+}
+
+/** 列表展示用：去掉协议与末尾斜杠 */
+export function displayUrl(raw : string) : string {
+  let url = raw.trim()
+  if (url.length == 0) return ''
+  const lower = url.toLowerCase()
+  if (lower.startsWith('https://')) url = url.substring(8)
+  else if (lower.startsWith('http://')) url = url.substring(7)
+  while (url.endsWith('/')) {
+    url = url.substring(0, url.length - 1)
+  }
+  return url
+}
+
+export function openUrlInNewTab(raw : string) : void {
+  const url = normalizeUrl(raw)
+  if (url.length == 0) {
+    uni.showToast({ title: '网址无效', icon: 'none' })
+    return
+  }
+  // #ifdef WEB || H5
+  window.open(url, '_blank')
+  // #endif
+  // #ifndef WEB
+  // #ifndef H5
+  uni.setClipboardData({
+    data: url,
+    success: () => {
+      uni.showToast({ title: '链接已复制，请在浏览器打开', icon: 'none' })
+    }
+  })
+  // #endif
+  // #endif
+}

@@ -2,15 +2,189 @@
  * 本地存储：Git 设置、密钥文件缓存、多密码库索引
  */
 
-import type { AppSettings, GitConfig, KeyFile, VaultSummary } from '@/types/vault.uts'
+import type { AppSettings, GitConfig, GitPlatform, KeyFile, VaultSummary, CachedKeyRecord, KeyCacheOption } from '@/types/vault.uts'
 import { defaultGitConfig } from '@/utils/git.uts'
-import { keyFileToSummary, keyFileToJson } from '@/utils/keyfile.uts'
+import { keyFileFromJsonObject, keyFileToSummary } from '@/utils/keyfile.uts'
 
 const SETTINGS_KEY = 'vaultsync_settings'
 const VAULT_INDEX_KEY = 'vaultsync_vault_index'
 const ACTIVE_VAULT_KEY = 'vaultsync_active_vault'
 const KEYFILE_PREFIX = 'vaultsync_key_'
 const REMOTE_SHA_PREFIX = 'vaultsync_sha_'
+const KEY_CACHE_DURATION_KEY = 'vaultsync_key_cache_duration'
+
+/** 密钥缓存时长：0=不缓存，-1=永久，正数=毫秒 */
+export const KEY_CACHE_OPTIONS : KeyCacheOption[] = [
+  { label: '不缓存', ms: 0 },
+  { label: '1小时', ms: 3600000 },
+  { label: '1天', ms: 86400000 },
+  { label: '7天', ms: 604800000 },
+  { label: '30天', ms: 2592000000 },
+  { label: '永久', ms: -1 }
+]
+
+const DEFAULT_KEY_CACHE_MS = -1
+
+export function loadKeyCacheDurationMs() : number {
+  const raw = uni.getStorageSync(KEY_CACHE_DURATION_KEY) as string | null
+  if (raw == null || raw.length == 0) return DEFAULT_KEY_CACHE_MS
+  const parsed = parseInt(raw)
+  if (isNaN(parsed)) return DEFAULT_KEY_CACHE_MS
+  return parsed
+}
+
+export function saveKeyCacheDurationMs(ms : number) : void {
+  uni.setStorageSync(KEY_CACHE_DURATION_KEY, ms.toString())
+}
+
+function isCacheExpired(expiresAt : string | null) : boolean {
+  if (expiresAt == null) return false
+  return Date.now() > new Date(expiresAt).getTime()
+}
+
+function computeExpiresAt(durationMs : number) : string | null {
+  if (durationMs < 0) return null
+  return new Date(Date.now() + durationMs).toISOString()
+}
+
+/** 缓存剩余时间文案 */
+export function formatCacheExpiry(expiresAt : string | null) : string {
+  if (expiresAt == null) return '永久'
+  const diff = new Date(expiresAt).getTime() - Date.now()
+  if (diff <= 0) return '已过期'
+  if (diff < 3600000) {
+    const mins = Math.ceil(diff / 60000)
+    return mins.toString() + '分钟后过期'
+  }
+  if (diff < 86400000) {
+    const hours = Math.ceil(diff / 3600000)
+    return hours.toString() + '小时后过期'
+  }
+  const days = Math.ceil(diff / 86400000)
+  return days.toString() + '天后过期'
+}
+
+function readJsonString(obj : any, key : string, fallback : string = '') : string {
+  const jo = obj as UTSJSONObject
+  const value = jo.get(key)
+  if (value == null) return fallback
+  return value as string
+}
+
+function readJsonStringOrNull(obj : any, key : string) : string | null {
+  const jo = obj as UTSJSONObject
+  const value = jo.get(key)
+  if (value == null) return null
+  return value as string
+}
+
+function parseGitPlatform(value : string | null) : GitPlatform {
+  if (value == 'github') return 'github'
+  if (value == 'gitlab') return 'gitlab'
+  return 'gitee'
+}
+
+function keyFileToJsonObj(keyFile : KeyFile) : UTSJSONObject {
+  const obj = new UTSJSONObject()
+  obj.set('version', keyFile.version)
+  obj.set('vault_id', keyFile.vault_id)
+  obj.set('vault_name', keyFile.vault_name)
+  obj.set('master_key', keyFile.master_key)
+  obj.set('git_vault_path', keyFile.git_vault_path)
+  obj.set('created_at', keyFile.created_at)
+  return obj
+}
+
+function parseVaultSummary(obj : any) : VaultSummary | null {
+  const vaultId = readJsonString(obj, 'vault_id')
+  if (vaultId.length == 0) return null
+  return {
+    vault_id: vaultId,
+    vault_name: readJsonString(obj, 'vault_name'),
+    git_vault_path: readJsonString(obj, 'git_vault_path'),
+    last_opened_at: readJsonString(obj, 'last_opened_at'),
+    expires_at: readJsonStringOrNull(obj, 'expires_at')
+  }
+}
+
+function summaryToJsonObj(summary : VaultSummary) : UTSJSONObject {
+  const obj = new UTSJSONObject()
+  obj.set('vault_id', summary.vault_id)
+  obj.set('vault_name', summary.vault_name)
+  obj.set('git_vault_path', summary.git_vault_path)
+  obj.set('last_opened_at', summary.last_opened_at)
+  obj.set('expires_at', summary.expires_at)
+  return obj
+}
+
+function parseCachedKeyRaw(raw : string) : CachedKeyRecord | null {
+  try {
+    const parsed = JSON.parse(raw) as UTSJSONObject
+    const keyFileObj = parsed.get('key_file')
+    if (keyFileObj != null) {
+      const keyFile = keyFileFromJsonObject(keyFileObj)
+      if (keyFile == null) return null
+      return {
+        key_file: keyFile,
+        expires_at: readJsonStringOrNull(parsed, 'expires_at')
+      }
+    }
+    const legacyKey = keyFileFromJsonObject(parsed)
+    if (legacyKey != null) {
+      return {
+        key_file: legacyKey,
+        expires_at: null
+      }
+    }
+    return null
+  } catch (e) {
+    return null
+  }
+}
+
+/** 清除所有已过期的密钥缓存 */
+export function purgeExpiredKeyCaches() : void {
+  const list = loadVaultIndexRaw()
+  for (let i = 0; i < list.length; i++) {
+    const vaultId = list[i].vault_id
+    const raw = uni.getStorageSync(KEYFILE_PREFIX + vaultId) as string | null
+    if (raw == null || raw.length == 0) continue
+    const record = parseCachedKeyRaw(raw)
+    if (record == null) continue
+    if (isCacheExpired(record.expires_at)) {
+      removeCachedKeyFile(vaultId)
+    }
+  }
+}
+
+function loadVaultIndexRaw() : VaultSummary[] {
+  const raw = uni.getStorageSync(VAULT_INDEX_KEY) as string | null
+  if (raw == null || raw.length == 0) return []
+  try {
+    const parsed = JSON.parse(raw) as any
+    const arr = parsed as any[]
+    const result : VaultSummary[] = []
+    for (let i = 0; i < arr.length; i++) {
+      const item = parseVaultSummary(arr[i])
+      if (item != null) result.push(item)
+    }
+    return result
+  } catch (e) {
+    return []
+  }
+}
+
+function parseGitConfigFromJson(obj : any) : GitConfig | null {
+  if (obj == null) return null
+  return normalizeGitConfig({
+    platform: parseGitPlatform(readJsonStringOrNull(obj, 'platform')),
+    owner: readJsonString(obj, 'owner'),
+    repo: readJsonString(obj, 'repo'),
+    branch: readJsonString(obj, 'branch', 'main'),
+    vault_path: readJsonString(obj, 'vault_path'),
+    token: readJsonString(obj, 'token')
+  })
+}
 
 export function loadSettings() : AppSettings {
   const raw = uni.getStorageSync(SETTINGS_KEY) as string | null
@@ -18,25 +192,64 @@ export function loadSettings() : AppSettings {
     return { git: null, last_sync_at: null }
   }
   try {
-    return JSON.parse(raw) as AppSettings
+    const parsed = JSON.parse(raw) as UTSJSONObject
+    const gitObj = parsed.get('git')
+    return {
+      git: gitObj != null ? parseGitConfigFromJson(gitObj) : null,
+      last_sync_at: readJsonStringOrNull(parsed, 'last_sync_at')
+    }
   } catch (e) {
     return { git: null, last_sync_at: null }
   }
 }
 
 export function saveSettings(settings : AppSettings) : void {
-  uni.setStorageSync(SETTINGS_KEY, JSON.stringify(settings))
+  const payload = new UTSJSONObject()
+  if (settings.git != null) {
+    const g = settings.git
+    const gitObj = new UTSJSONObject()
+    gitObj.set('platform', g.platform)
+    gitObj.set('owner', g.owner)
+    gitObj.set('repo', g.repo)
+    gitObj.set('branch', g.branch)
+    gitObj.set('vault_path', g.vault_path)
+    gitObj.set('token', g.token)
+    payload.set('git', gitObj)
+  } else {
+    payload.set('git', null)
+  }
+  payload.set('last_sync_at', settings.last_sync_at)
+  uni.setStorageSync(SETTINGS_KEY, JSON.stringify(payload))
+}
+
+function normalizeGitConfig(raw : GitConfig | null) : GitConfig | null {
+  if (raw == null) return null
+  const platform = raw.platform
+  const owner = raw.owner != null ? raw.owner : ''
+  const repo = raw.repo != null ? raw.repo : ''
+  const branch = raw.branch != null && raw.branch.length > 0 ? raw.branch : 'main'
+  const vaultPath = raw.vault_path != null ? raw.vault_path : ''
+  const token = raw.token != null ? raw.token : ''
+  return {
+    platform: platform,
+    owner: owner,
+    repo: repo,
+    branch: branch,
+    vault_path: vaultPath,
+    token: token
+  }
 }
 
 export function saveGitConfig(config : GitConfig) : void {
   const settings = loadSettings()
-  settings.git = config
+  settings.git = normalizeGitConfig(config)
   saveSettings(settings)
 }
 
 export function loadGitConfig() : GitConfig {
   const settings = loadSettings()
-  if (settings.git != null) return settings.git
+  const normalized = normalizeGitConfig(settings.git)
+  if (normalized != null) return normalized
   return defaultGitConfig()
 }
 
@@ -62,17 +275,16 @@ export function updateLastSync() : void {
 // ---- 多密码库索引 ----
 
 export function loadVaultIndex() : VaultSummary[] {
-  const raw = uni.getStorageSync(VAULT_INDEX_KEY) as string | null
-  if (raw == null || raw.length == 0) return []
-  try {
-    return JSON.parse(raw) as VaultSummary[]
-  } catch (e) {
-    return []
-  }
+  purgeExpiredKeyCaches()
+  return loadVaultIndexRaw()
 }
 
 function saveVaultIndex(list : VaultSummary[]) : void {
-  uni.setStorageSync(VAULT_INDEX_KEY, JSON.stringify(list))
+  const arr : UTSJSONObject[] = []
+  for (let i = 0; i < list.length; i++) {
+    arr.push(summaryToJsonObj(list[i]))
+  }
+  uni.setStorageSync(VAULT_INDEX_KEY, JSON.stringify(arr))
 }
 
 export function upsertVaultSummary(summary : VaultSummary) : void {
@@ -102,20 +314,34 @@ export function removeVaultFromIndex(vaultId : string) : void {
 
 // ---- 密钥文件缓存 ----
 
-export function cacheKeyFile(keyFile : KeyFile) : void {
-  uni.setStorageSync(KEYFILE_PREFIX + keyFile.vault_id, keyFileToJson(keyFile))
-  upsertVaultSummary(keyFileToSummary(keyFile))
+/**
+ * 缓存密钥文件
+ * @param durationMs 0=不缓存，-1=永久，正数=有效毫秒数
+ */
+export function cacheKeyFile(keyFile : KeyFile, durationMs : number = -1) : void {
+  if (durationMs == 0) {
+    uni.removeStorageSync(ACTIVE_VAULT_KEY)
+    return
+  }
+  const expiresAt = computeExpiresAt(durationMs)
+  const recordObj = new UTSJSONObject()
+  recordObj.set('key_file', keyFileToJsonObj(keyFile))
+  recordObj.set('expires_at', expiresAt)
+  uni.setStorageSync(KEYFILE_PREFIX + keyFile.vault_id, JSON.stringify(recordObj))
+  upsertVaultSummary(keyFileToSummary(keyFile, expiresAt))
   setActiveVaultId(keyFile.vault_id)
 }
 
 export function loadCachedKeyFile(vaultId : string) : KeyFile | null {
   const raw = uni.getStorageSync(KEYFILE_PREFIX + vaultId) as string | null
   if (raw == null || raw.length == 0) return null
-  try {
-    return JSON.parse(raw) as KeyFile
-  } catch (e) {
+  const record = parseCachedKeyRaw(raw)
+  if (record == null) return null
+  if (isCacheExpired(record.expires_at)) {
+    removeCachedKeyFile(vaultId)
     return null
   }
+  return record.key_file
 }
 
 export function removeCachedKeyFile(vaultId : string) : void {

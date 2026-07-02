@@ -1,58 +1,70 @@
 <template>
-  <view class="index-page">
+  <view :class="['page-shell', themeClass, 'index-page']">
     <view class="vault-header" v-if="vaultName.length > 0">
-      <text class="vault-header-name">{{ vaultName }}</text>
-      <text class="vault-header-path">{{ gitPath }}</text>
+      <text class="vault-header-name t-text-primary">{{ vaultName }}</text>
+      <text class="vault-header-path t-text-accent">{{ gitPath }}</text>
     </view>
 
     <view class="search-bar">
       <input
-        class="search-input"
+        class="t-input search-input"
         v-model="keyword"
-        placeholder="搜索账号..."
+        placeholder="搜索标题、账号、网址、标签..."
         @input="onSearch"
       />
     </view>
 
     <scroll-view class="entry-list" scroll-y="true">
       <view v-if="entries.length == 0" class="empty">
-        <text class="empty-text">暂无密码记录</text>
-        <text class="empty-hint">点击右下角 + 添加</text>
+        <text class="empty-text t-text-secondary">暂无密码记录</text>
+        <text class="empty-hint t-text-muted">点击右下角 + 添加</text>
       </view>
       <view
         v-for="(item, index) in entries"
         :key="item.id"
-        class="entry-card"
+        class="t-card entry-card"
         @click="goEdit(item.id)"
       >
         <view class="entry-main">
-          <text class="entry-title">{{ item.title }}</text>
-          <text class="entry-user">{{ item.username }}</text>
+          <text class="entry-title t-text-primary">{{ item.title }}</text>
+          <text class="entry-user t-text-secondary" v-if="item.username.length > 0">{{ item.username }}</text>
+          <text
+            class="entry-url entry-url-link t-text-accent"
+            v-if="item.url.length > 0"
+            @click.stop="openWebsite(item.url)"
+          >{{ displayWebsite(item.url) }}</text>
+          <view class="entry-tags" v-if="item.tags.length > 0">
+            <text
+              v-for="(tag, tagIndex) in item.tags"
+              :key="tagIndex"
+              class="entry-tag"
+            >{{ tag }}</text>
+          </view>
         </view>
         <view class="entry-actions">
-          <view class="action-btn" @click.stop="copyText(item.username, '用户名')">
-            <text class="action-text">用户</text>
+          <view class="t-action-btn" @click.stop="copyText(item.username, '用户名')">
+            <text class="t-action-text">用户</text>
           </view>
-          <view class="action-btn" @click.stop="copyText(item.password, '密码')">
-            <text class="action-text">密码</text>
+          <view class="t-action-btn" @click.stop="copyText(item.password, '密码')">
+            <text class="t-action-text">密码</text>
           </view>
         </view>
       </view>
     </scroll-view>
 
-    <view class="fab" @click="goNew">
-      <text class="fab-text">+</text>
+    <view class="t-fab" @click="goNew">
+      <text class="t-fab-text">+</text>
     </view>
 
-    <view class="bottom-bar">
-      <view class="bar-btn" @click="handleSync">
-        <text class="bar-btn-text">{{ syncing ? '同步中...' : '同步' }}</text>
+    <view class="t-bottom-bar">
+      <view class="t-bar-btn" @click="handleSync">
+        <text class="t-bar-btn-text">{{ syncing ? '同步中...' : '同步' }}</text>
       </view>
-      <view class="bar-btn" @click="goSettings">
-        <text class="bar-btn-text">设置</text>
+      <view class="t-bar-btn" @click="goSettings">
+        <text class="t-bar-btn-text">设置</text>
       </view>
-      <view class="bar-btn" @click="handleSwitch">
-        <text class="bar-btn-text">切换库</text>
+      <view class="t-bar-btn" @click="handleSwitch">
+        <text class="t-bar-btn-text">切换库</text>
       </view>
     </view>
   </view>
@@ -61,6 +73,9 @@
 <script lang="uts">
   import { vaultStore } from '@/store/vaultStore.uts'
   import type { VaultEntry } from '@/types/vault.uts'
+  import { syncPageTheme } from '@/utils/theme.uts'
+  import { displayUrl, openUrlInNewTab } from '@/utils/url.uts'
+  import { errorMessage } from '@/utils/error.uts'
 
   export default {
     data() {
@@ -69,10 +84,13 @@
         entries: [] as VaultEntry[],
         syncing: false,
         vaultName: '',
-        gitPath: ''
+        gitPath: '',
+        themeClass: 'theme-light'
       }
     },
     onShow() {
+      const theme = syncPageTheme()
+      this.themeClass = theme.className
       if (!vaultStore.isUnlocked) {
         uni.reLaunch({ url: '/pages/unlock/unlock' })
         return
@@ -107,15 +125,21 @@
           }
         })
       },
+      displayWebsite(url : string) : string {
+        return displayUrl(url)
+      },
+      openWebsite(url : string) {
+        openUrlInNewTab(url)
+      },
       handleSync() {
         this.syncing = true
         vaultStore.sync().then((msg) => {
           this.syncing = false
           this.refreshList()
           uni.showToast({ title: msg, icon: 'success' })
-        }).catch((err : Error) => {
+        }).catch((err) => {
           this.syncing = false
-          uni.showToast({ title: err.message, icon: 'none' })
+          uni.showToast({ title: errorMessage(err), icon: 'none' })
         })
       },
       handleSwitch() {
@@ -127,46 +151,22 @@
 </script>
 
 <style>
-  .index-page {
-    flex: 1;
-    flex-direction: column;
-    background-color: #0f0f1a;
-  }
+  .index-page { flex-direction: column; }
 
   .vault-header {
     padding: 10px 16px 0 16px;
     flex-direction: column;
   }
 
-  .vault-header-name {
-    font-size: 13px;
-    color: #e8e8f0;
-    font-weight: bold;
-  }
+  .vault-header-name { font-size: 13px; font-weight: bold; }
+  .vault-header-path { font-size: 11px; margin-top: 2px; }
 
-  .vault-header-path {
-    font-size: 11px;
-    color: #6c63ff;
-    margin-top: 2px;
-  }
-
-  .search-bar {
-    padding: 12px 16px;
-  }
-
-  .search-input {
-    width: 100%;
-    height: 40px;
-    background-color: #1a1a2e;
-    border-radius: 8px;
-    padding: 0 12px;
-    color: #e8e8f0;
-    font-size: 14px;
-  }
+  .search-bar { padding: 12px 16px; }
+  .search-input { height: 42px; }
 
   .entry-list {
     flex: 1;
-    padding: 0 16px;
+    padding: 0 16px 80px 16px;
   }
 
   .empty {
@@ -174,92 +174,60 @@
     padding: 60px 0;
   }
 
-  .empty-text {
-    font-size: 16px;
-    color: #8888a0;
-    margin-bottom: 8px;
-  }
-
-  .empty-hint {
-    font-size: 13px;
-    color: #555570;
-  }
+  .empty-text { font-size: 16px; margin-bottom: 8px; }
+  .empty-hint { font-size: 13px; }
 
   .entry-card {
-    flex-direction: row;
-    align-items: center;
-    background-color: #1a1a2e;
-    border-radius: 10px;
-    padding: 14px 16px;
     margin-bottom: 10px;
+    flex-direction: row;
+    align-items: flex-start;
   }
 
   .entry-main {
     flex: 1;
     flex-direction: column;
+    margin-right: 8px;
   }
 
   .entry-title {
     font-size: 16px;
-    color: #e8e8f0;
     font-weight: bold;
     margin-bottom: 4px;
   }
 
-  .entry-user {
-    font-size: 13px;
-    color: #8888a0;
+  .entry-user { font-size: 13px; margin-bottom: 2px; }
+
+  .entry-url {
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+
+  .entry-url-link {
+    font-weight: bold;
+  }
+
+  .entry-tags {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .entry-tag {
+    font-size: 11px;
+    color: #635bff;
+    background-color: #ede9fe;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-right: 6px;
+    margin-bottom: 4px;
+  }
+
+  .theme-dark .entry-tag {
+    color: #8b83ff;
+    background-color: #2a2a55;
   }
 
   .entry-actions {
     flex-direction: row;
-  }
-
-  .action-btn {
-    padding: 6px 12px;
-    background-color: #2a2a45;
-    border-radius: 6px;
-    margin-left: 8px;
-  }
-
-  .action-text {
-    font-size: 12px;
-    color: #6c63ff;
-  }
-
-  .fab {
-    position: fixed;
-    right: 24px;
-    bottom: 80px;
-    width: 52px;
-    height: 52px;
-    border-radius: 26px;
-    background-color: #6c63ff;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .fab-text {
-    font-size: 28px;
-    color: #ffffff;
-  }
-
-  .bottom-bar {
-    flex-direction: row;
-    border-top-width: 1px;
-    border-top-color: #222240;
-    padding: 8px 0;
-    background-color: #1a1a2e;
-  }
-
-  .bar-btn {
-    flex: 1;
-    align-items: center;
-    padding: 8px 0;
-  }
-
-  .bar-btn-text {
-    font-size: 14px;
-    color: #8888a0;
+    padding-top: 2px;
   }
 </style>

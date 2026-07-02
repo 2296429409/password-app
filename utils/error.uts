@@ -1,0 +1,8 @@
+/** 从 Promise reject 或 catch 参数提取错误信息 */
+export function errorMessage(err : any | null) : string {
+  if (err == null) return '未知错误'
+  if (err instanceof Error) {
+    return err.message
+  }
+  return '' + err
+}
